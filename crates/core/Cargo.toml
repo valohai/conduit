@@ -3,5 +3,10 @@ name = "conduit-core"
 version.workspace = true
 edition.workspace = true
 
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+
 [lints]
 workspace = true

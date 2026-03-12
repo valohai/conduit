@@ -1,0 +1,15 @@
+# Conduit configuration file that you can copy, edit, and
+# rename as `conduit.toml` for development
+
+listen = "127.0.0.1:8080"
+
+# Each provider gets a localhost route prefixed by the provider key.
+# The proxy strips the prefix before forwarding.
+# You can use `prefix = "something"` to override the default prefix.
+# SDK base_url becomes: http://localhost:8080/{provider-prefix}/v1
+
+[providers.openai]
+upstream = "https://api.openai.com"
+
+[providers.anthropic]
+upstream = "https://api.anthropic.com"

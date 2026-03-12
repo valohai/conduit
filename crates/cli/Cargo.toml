@@ -10,7 +10,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+conduit-core.workspace = true
 conduit-proxy.workspace = true
+tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

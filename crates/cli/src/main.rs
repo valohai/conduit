@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Cli {
@@ -6,16 +7,16 @@ struct Cli {
     verbose: u8,
     #[arg(short = 'q', long, action = clap::ArgAction::Count, global = true, help = "Decrease log verbosity (-q for warn, -qq for error, -qqq for off)")]
     quiet: u8,
+    #[arg(short, long = "config", global = true, help = format!("Path to config TOML file [env: {}]", conduit_core::CONFIG_ENV_VAR))]
+    config_path: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "TODO: remove")]
-    Greet,
-    #[command(about = "TODO: remove")]
-    Panic,
+    #[command(about = "Run the proxy server [default command]")]
+    Proxy,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,10 +40,13 @@ fn main() -> anyhow::Result<()> {
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    match cli.command {
-        None => println!("Default command!"),
-        Some(Commands::Greet) => println!("{}", conduit_proxy::greeting()),
-        Some(Commands::Panic) => panic!("panic from cli"),
+    let config = conduit_core::Config::load(cli.config_path)?;
+    tracing::debug!(?config, "config loaded");
+
+    let cmd = cli.command.unwrap_or(Commands::Proxy);
+    match cmd {
+        Commands::Proxy => conduit_proxy::start(config)?,
     }
+
     Ok(())
 }

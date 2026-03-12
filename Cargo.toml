@@ -9,8 +9,10 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
-conduit-proxy = { version = "0.1.0", path = "crates/proxy" }
 conduit-core = { version = "0.1.0", path = "crates/core" }
+conduit-proxy = { version = "0.1.0", path = "crates/proxy" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.clippy]
 all = { level = "deny" }

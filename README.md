@@ -9,6 +9,13 @@
 ```shell
 cargo install valohai-conduit
 conduit --help
+
+# TODO: document the configuration
+
+conduit
+# then you can already make requests through the proxy, try:
+# => http://127.0.0.1:9090/openai
+# => http://127.0.0.1:9090/anthropic/v1/messages
 ```
 
 ## Development

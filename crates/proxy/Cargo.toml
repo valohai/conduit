@@ -5,7 +5,14 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+bytes.workspace = true
 conduit-core.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
 tracing.workspace = true
 
 [lints]

@@ -48,13 +48,15 @@ impl Config {
         if self.listen.starts_with(':') {
             self.listen = format!("127.0.0.1{}", self.listen);
         }
+        for provider in self.providers.values_mut() {
+            provider.upstream = provider.upstream.trim_end_matches('/').to_string();
+        }
     }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct ProviderConfig {
     pub upstream: String,
-    pub prefix: Option<String>,
 }
 
 #[cfg(test)]
@@ -115,6 +117,19 @@ upstream = "https://api.anthropic.com"
     fn parse_invalid_toml() {
         let result = Config::from_toml_str("listen = [[[invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn upstream_trailing_slash_stripped() {
+        let toml = r#"
+[providers.openai]
+upstream = "https://api.openai.com/"
+"#;
+        let config = Config::from_toml_str(toml).unwrap();
+        assert_eq!(
+            config.providers["openai"].upstream,
+            "https://api.openai.com"
+        );
     }
 
     #[test]

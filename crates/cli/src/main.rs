@@ -19,7 +19,8 @@ enum Commands {
     Proxy,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     anyhow::ensure!(
@@ -45,7 +46,7 @@ fn main() -> anyhow::Result<()> {
 
     let cmd = cli.command.unwrap_or(Commands::Proxy);
     match cmd {
-        Commands::Proxy => conduit_proxy::start(config)?,
+        Commands::Proxy => conduit_proxy::start(config).await?,
     }
 
     Ok(())

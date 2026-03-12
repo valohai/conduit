@@ -5,3 +5,6 @@ edition.workspace = true
 
 [dependencies]
 conduit-core.workspace = true
+
+[lints]
+workspace = true

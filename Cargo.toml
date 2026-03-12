@@ -11,3 +11,9 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 conduit-proxy = { version = "0.1.0", path = "crates/proxy" }
 conduit-core = { version = "0.1.0", path = "crates/core" }
+
+[workspace.lints.clippy]
+all = { level = "deny" }
+
+[workspace.lints.rust]
+warnings = { level = "deny" }

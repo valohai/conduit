@@ -9,6 +9,8 @@ Then:
 
 ```shell
 cargo run -- help
+cargo fmt
+cargo clippy --workspace --tests
 ```
 
 ## Usage

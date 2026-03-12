@@ -1,0 +1,7 @@
+[package]
+name = "conduit-proxy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+conduit-core.workspace = true

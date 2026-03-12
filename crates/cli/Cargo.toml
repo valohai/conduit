@@ -1,0 +1,13 @@
+[package]
+name = "valohai-conduit"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "conduit"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+conduit-proxy.workspace = true

@@ -1,0 +1,4 @@
+[package]
+name = "conduit-core"
+version.workspace = true
+edition.workspace = true

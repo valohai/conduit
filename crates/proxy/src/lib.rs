@@ -22,8 +22,8 @@ const STRIPPED_REQUEST_HEADERS: &[&str] = &["host", "accept-encoding"];
 // the following hop-by-hop headers should not be forwarded downstream
 const STRIPPED_RESPONSE_HEADERS: &[&str] = &["transfer-encoding", "connection", "keep-alive"];
 
-struct AppState {
-    http_client: reqwest::Client,
+pub struct AppState {
+    pub http_client: reqwest::Client,
 }
 
 struct ProviderContext {
@@ -46,7 +46,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_router(config: &Config, state: Arc<AppState>) -> Router {
+pub fn build_router(config: &Config, state: Arc<AppState>) -> Router {
     let mut router = Router::new().route("/health", get(health));
 
     for (provider_map_key, provider_config) in &config.providers {
@@ -180,4 +180,319 @@ async fn proxy_handler(
 
 async fn health() -> (StatusCode, &'static str) {
     (StatusCode::OK, "OK")
+}
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    use super::*;
+
+    pub fn test_state() -> Arc<AppState> {
+        Arc::new(AppState {
+            http_client: reqwest::Client::new(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::test_state;
+    use axum::body::Body;
+    use axum::extract::Request;
+    use http_body_util::BodyExt;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn health_endpoint_works() -> anyhow::Result<()> {
+        let config = Config::default();
+        let app = build_router(&config, test_state());
+
+        let resp = app
+            .oneshot(Request::get("/health").body(Body::empty())?)
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await?.to_bytes();
+        assert_eq!(body, "OK");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn not_found_for_unknown_routes() -> anyhow::Result<()> {
+        let config = Config::default();
+        let app = build_router(&config, test_state());
+
+        let resp = app
+            .oneshot(Request::get("/nonexistent").body(Body::empty())?)
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bad_gateway_when_upstream_unreachable() -> anyhow::Result<()> {
+        let config = Config {
+            listen: "127.0.0.1:0".into(),
+            providers: HashMap::from([(
+                "broken".into(),
+                ProviderConfig {
+                    upstream: "http://127.0.0.1:1".into(),
+                },
+            )]),
+        };
+        let app = build_router(&config, test_state());
+
+        let resp = app
+            .oneshot(Request::post("/broken/v1/chat/completions").body(Body::empty())?)
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_openai_chat_completions {
+    use super::*;
+    use crate::testutil::test_state;
+    use axum::body::Body;
+    use axum::extract::Request;
+    use http_body_util::BodyExt;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    async fn stub_app() -> Router {
+        let config = Config {
+            listen: "127.0.0.1:0".into(),
+            providers: HashMap::from([(
+                "openai".into(),
+                ProviderConfig {
+                    upstream: stub_upstream().await,
+                },
+            )]),
+        };
+        build_router(&config, test_state())
+    }
+
+    async fn stub_upstream() -> String {
+        let app = Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(stub_openai_chat_completions),
+            )
+            .fallback(|| async { (StatusCode::NOT_FOUND, "not found") });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+
+        format!("http://{addr}")
+    }
+
+    // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+    // https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
+    async fn stub_openai_chat_completions(
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> Response {
+        // https://developers.openai.com/api/reference/resources/completions#(resource)%20completions%20%3E%20(model)%20completion_usage%20%3E%20(schema)
+        let usage = json!({
+            "prompt_tokens": 19,  // number of tokens in the prompt (input)
+            "completion_tokens": 10, // number of tokens in the generated completion (output)
+            "total_tokens": 29,  // total number of tokens; prompt + completion
+            "completion_tokens_details": { // further breakdown of tokens in completion
+                "reasoning_tokens": 0,
+                "audio_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0
+            },
+            "prompt_tokens_details": { // further breakdown of tokens in prompt
+                "cached_tokens": 0,
+                "audio_tokens": 0
+            },
+        });
+
+        let stream_requested = body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // only streaming responses can control if usage is included or not?
+        let include_usage = body
+            .get("stream_options")
+            .and_then(|v| v.get("include_usage"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if stream_requested {
+            let make_chunk = |delta: serde_json::Value, finish_reason: Option<&str>| {
+                // https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events#event
+                let mut chunk = json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion.chunk",
+                    "created": 1700000000,
+                    "model": "gpt-5-mini-2025-08-07",
+                    "system_fingerprint": "fp_test",
+                    "choices": [{
+                        "index": 0,
+                        "delta": delta,
+                        "logprobs": null,
+                        "finish_reason": finish_reason,
+                    }],
+                });
+                if include_usage {
+                    chunk["usage"] = serde_json::Value::Null;
+                }
+                format!("data: {}\n\n", chunk)
+            };
+
+            let mut chunks = vec![
+                make_chunk(json!({"role": "assistant", "content": ""}), None),
+                make_chunk(json!({"content": "Hel"}), None),
+                make_chunk(json!({"content": "lo!  How can I "}), None),
+                make_chunk(json!({"content": "assist you today?"}), None),
+                make_chunk(json!({}), Some("stop")),
+            ];
+            if include_usage {
+                chunks.push(format!(
+                    "data: {}\n\n",
+                    json!({
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion.chunk",
+                        "created": 1700000000,
+                        "model": "gpt-5-mini-2025-08-07",
+                        "system_fingerprint": "fp_test",
+                        "choices": [],
+                        "usage": usage.clone(),
+                    })
+                ));
+            }
+            chunks.push("data: [DONE]\n\n".to_string());
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    yield Ok::<_, std::io::Error>(chunk);
+                }
+            };
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        } else {
+            // non-streaming responses type usage as "optional" but it _should_ always be there
+            // as the controls to include it or not are only for streaming responses
+            // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+            axum::Json(json!({
+              "id": "chatcmpl-test",
+              "object": "chat.completion",
+              "created": 1741569952,
+              "model": "gpt-5.4",
+              "choices": [
+                {
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "Hello! How can I assist you today?",
+                    "refusal": null,
+                    "annotations": []
+                  },
+                  "logprobs": null,
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": usage.clone(),
+              "service_tier": "default"
+            }))
+            .into_response()
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_requests() -> anyhow::Result<()> {
+        let app = stub_app().await;
+
+        let resp = app
+            .oneshot(
+                Request::post("/openai/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-5-mini","messages":[{"role":"user","content":"Hello!"}]}"#,
+                    ))?,
+            )
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await?.to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(json["id"], "chatcmpl-test");
+        assert_eq!(json["usage"]["total_tokens"], 29);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_responses_without_usage() -> anyhow::Result<()> {
+        let app = stub_app().await;
+
+        let resp = app
+            .oneshot(
+                Request::post("/openai/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"gpt-5-mini","messages":[{"role":"user","content":"Hello!"}],"stream":true}"#))?,
+            )
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
+
+        let body = resp.into_body().collect().await?.to_bytes();
+        let body_str = std::str::from_utf8(&body)?;
+        assert!(body_str.contains("\"chatcmpl-test\""));
+        assert!(!body_str.contains("\"usage\""));
+        assert!(body_str.ends_with("data: [DONE]\n\n"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_responses_with_usage() -> anyhow::Result<()> {
+        let app = stub_app().await;
+
+        let resp = app
+            .oneshot(
+                Request::post("/openai/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-5-mini","messages":[{"role":"user","content":"Hello!"}],"stream":true,"stream_options":{"include_usage":true}}"#,
+                    ))?,
+            )
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await?.to_bytes();
+        let body_str = std::str::from_utf8(&body)?;
+
+        let lines: Vec<&str> = body_str
+            .lines()
+            .filter(|l| l.starts_with("data: {")) // NB: termination is "data: [DONE]" so dropped
+            .collect();
+
+        for data_line in &lines[..lines.len() - 1] {
+            let line = data_line.strip_prefix("data: ").unwrap();
+            let json: serde_json::Value = serde_json::from_str(line)?;
+            assert!(json["usage"].is_null());
+        }
+
+        let last_data = lines.last().unwrap().strip_prefix("data: ").unwrap();
+        let last_json: serde_json::Value = serde_json::from_str(last_data)?;
+
+        assert_eq!(last_json["usage"]["prompt_tokens"], 19);
+        assert_eq!(last_json["usage"]["completion_tokens"], 10);
+        assert_eq!(last_json["usage"]["total_tokens"], 29);
+
+        assert!(body_str.ends_with("data: [DONE]\n\n"));
+        Ok(())
+    }
 }

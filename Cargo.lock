@@ -307,9 +307,12 @@ dependencies = [
  "bytes",
  "conduit-core",
  "futures-util",
+ "http-body-util",
  "reqwest",
+ "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
 ]
 

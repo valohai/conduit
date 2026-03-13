@@ -1,88 +1,33 @@
 use serde_json::Value;
 
-pub enum UsageExtractor {
-    // expecting to get chunks in SSE events
-    Streaming {
-        line_buffer: String,
-        usage: Option<Value>,
-    },
-    // expecting a single-chunk request-response
-    Unary {
-        body: Vec<u8>,
-    },
+use crate::frame::Frame;
+use crate::inspect::{Inspector, Report};
+
+pub struct UsageInspector {
+    usage: Option<Value>,
 }
 
-impl UsageExtractor {
-    pub fn streaming() -> Self {
-        Self::Streaming {
-            line_buffer: String::new(),
-            usage: None,
-        }
-    }
-
-    pub fn unary() -> Self {
-        Self::Unary { body: Vec::new() }
-    }
-
-    pub fn process_chunk(&mut self, bytes: &[u8]) {
-        match self {
-            Self::Streaming { line_buffer, usage } => {
-                process_sse_chunk(line_buffer, usage, bytes);
-            }
-            Self::Unary { body } => {
-                body.extend_from_slice(bytes);
-            }
-        }
-    }
-
-    pub fn finish(self) -> Option<Value> {
-        match self {
-            Self::Streaming { usage, .. } => usage,
-            Self::Unary { body } => {
-                let mut json = serde_json::from_slice::<Value>(&body).ok()?;
-                let usage = json.as_object_mut()?.remove("usage")?;
-                if usage.is_null() { None } else { Some(usage) }
-            }
-        }
+impl UsageInspector {
+    pub fn new() -> Self {
+        Self { usage: None }
     }
 }
 
-fn process_sse_chunk(line_buffer: &mut String, usage: &mut Option<Value>, bytes: &[u8]) {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => line_buffer.push_str(text),
-        Err(e) => {
-            tracing::warn!("invalid UTF-8 in SSE chunk: {e}");
-            return;
+impl Inspector for UsageInspector {
+    fn on_frame(&mut self, frame: &Frame) {
+        tracing::trace!("on_frame: {:?}", frame);
+        match frame {
+            Frame::SseData(json) | Frame::UnaryResponse(json) => merge_usage(&mut self.usage, json),
         }
     }
 
-    let mut start = 0;
-
-    while let Some(pos) = line_buffer[start..].find('\n') {
-        let newline_pos = start + pos;
-        let line = &line_buffer[start..newline_pos];
-        start = newline_pos + 1;
-
-        // TODO: need provider-specific logic here?
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with(':') {
-            continue;
-        }
-
-        let Some(payload) = trimmed.strip_prefix("data:") else {
-            continue;
-        };
-
-        if let Ok(payload_json) = serde_json::from_str::<Value>(payload) {
-            merge_usage_from_sse_event(usage, &payload_json);
-        }
+    fn finish(&mut self) -> Vec<Report> {
+        tracing::trace!("finish: {:?}", self.usage);
+        self.usage.take().map(Report::Usage).into_iter().collect()
     }
-
-    line_buffer.drain(..start);
 }
 
-fn merge_usage_from_sse_event(usage: &mut Option<Value>, payload: &Value) {
+fn merge_usage(usage: &mut Option<Value>, payload: &Value) {
     let candidates: &[&Value] = &[
         // OpenAI Chat Completions unary and SSE
         // Anthropic Messages unary
@@ -112,23 +57,52 @@ fn merge_usage_from_sse_event(usage: &mut Option<Value>, payload: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::Framer;
     use serde_json::json;
+
+    fn extract_usage(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Value> {
+        let mut inspector = UsageInspector::new();
+        for chunk in chunks {
+            for frame in framer.process_chunk(chunk) {
+                inspector.on_frame(&frame);
+            }
+        }
+        for frame in framer.finish() {
+            inspector.on_frame(&frame);
+        }
+        inspector
+            .finish()
+            .into_iter()
+            .map(|Report::Usage(v)| v)
+            .next()
+    }
+
+    fn extract_usage_unary(body: &Value) -> Option<Value> {
+        let bytes = serde_json::to_vec(body).unwrap();
+        let mut framer = Framer::unary();
+        extract_usage(&mut framer, &[&bytes])
+    }
+
+    fn extract_usage_streaming(chunks: &[&[u8]]) -> Option<Value> {
+        let mut framer = Framer::streaming();
+        extract_usage(&mut framer, chunks)
+    }
 
     #[test]
     fn unary_no_usage() {
         let body = json!({"id": "chatcmpl-test"});
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut ext = UsageExtractor::unary();
-        ext.process_chunk(&bytes);
-        assert!(ext.finish().is_none());
+        assert!(extract_usage_unary(&body).is_none());
     }
 
     #[test]
     fn streaming_no_usage() {
-        let mut ext = UsageExtractor::streaming();
-        ext.process_chunk(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n");
-        ext.process_chunk(b"data: [DONE]\n\n");
-        assert!(ext.finish().is_none());
+        assert!(
+            extract_usage_streaming(&[
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+                b"data: [DONE]\n\n",
+            ])
+            .is_none()
+        );
     }
 
     #[test]
@@ -152,10 +126,7 @@ mod tests {
               }
             },
         });
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut ext = UsageExtractor::unary();
-        ext.process_chunk(&bytes);
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_unary(&body).unwrap();
         assert_eq!(usage["prompt_tokens"], 19);
         assert_eq!(usage["completion_tokens"], 10);
         assert_eq!(usage["total_tokens"], 29);
@@ -163,11 +134,12 @@ mod tests {
 
     #[test]
     fn streaming_openai_cc_usage() {
-        let mut ext = UsageExtractor::streaming();
-        ext.process_chunk(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n");
-        ext.process_chunk(b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n");
-        ext.process_chunk(b"data: [DONE]\n\n");
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&[
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+            b"data: [DONE]\n\n",
+        ])
+        .unwrap();
         assert_eq!(usage["prompt_tokens"], 10);
         assert_eq!(usage["completion_tokens"], 5);
         assert_eq!(usage["total_tokens"], 15);
@@ -176,33 +148,34 @@ mod tests {
     #[test]
     fn streaming_skips_null_usages() {
         // OpenAI Chat Completions API has null usages in the intermediate events
-        let mut ext = UsageExtractor::streaming();
-        ext.process_chunk(
+        let usage = extract_usage_streaming(&[
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}\n\n",
-        );
-        ext.process_chunk(b"data: {\"choices\":[],\"usage\":{\"total_tokens\":29}}\n\n");
-        ext.process_chunk(b"data: [DONE]\n\n");
-        let usage = ext.finish().unwrap();
+            b"data: {\"choices\":[],\"usage\":{\"total_tokens\":29}}\n\n",
+            b"data: [DONE]\n\n",
+        ])
+        .unwrap();
         assert_eq!(usage["total_tokens"], 29);
     }
 
     #[test]
     fn streaming_handles_chunks_split_across_boundaries() {
-        let mut ext = UsageExtractor::streaming();
-        ext.process_chunk(b"data: {\"choices\":[],\"usa");
-        ext.process_chunk(b"ge\":{\"total_tokens\":42}}\n\ndata: [DONE]\n\n");
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&[
+            b"data: {\"choices\":[],\"usa",
+            b"ge\":{\"total_tokens\":42}}\n\ndata: [DONE]\n\n",
+        ])
+        .unwrap();
         assert_eq!(usage["total_tokens"], 42);
     }
 
     #[test]
     fn streaming_ignores_non_data_fields() {
-        let mut ext = UsageExtractor::streaming();
-        ext.process_chunk(b": this is a comment\n");
-        ext.process_chunk(b"event: message\n");
-        ext.process_chunk(b"data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n\n");
-        ext.process_chunk(b"data: [DONE]\n\n");
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&[
+            b": this is a comment\n",
+            b"event: message\n",
+            b"data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n\n",
+            b"data: [DONE]\n\n",
+        ])
+        .unwrap();
         assert_eq!(usage["total_tokens"], 7);
     }
 
@@ -223,10 +196,7 @@ mod tests {
               "total_tokens": 123
             },
         });
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut ext = UsageExtractor::unary();
-        ext.process_chunk(&bytes);
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_unary(&body).unwrap();
         assert_eq!(usage["input_tokens"], 36);
         assert_eq!(usage["output_tokens"], 87);
         assert_eq!(usage["total_tokens"], 123);
@@ -249,11 +219,7 @@ mod tests {
             b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_67c9fdcf37fc8190ba82116e33fb28c507b8b0ad4e5eb654\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi there! How can I assist you today?\",\"annotations\":[]}]}}\n\n",
             b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_67c9fdcecf488190bdd9a0409de3a1ec07b8b0ad4e5eb654\",\"object\":\"response\",\"created_at\":1741290958,\"status\":\"completed\",\"usage\":{\"input_tokens\":37,\"output_tokens\":11,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":48}}}\n\n",
         ];
-        let mut ext = UsageExtractor::streaming();
-        for chunk in &chunks {
-            ext.process_chunk(chunk);
-        }
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&chunks).unwrap();
         assert_eq!(usage["input_tokens"], 37);
         assert_eq!(usage["output_tokens"], 11);
         assert_eq!(usage["total_tokens"], 48);
@@ -282,10 +248,7 @@ mod tests {
             },
           }
         });
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut ext = UsageExtractor::unary();
-        ext.process_chunk(&bytes);
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_unary(&body).unwrap();
         assert_eq!(usage["input_tokens"], 2095);
         assert_eq!(usage["output_tokens"], 503);
         assert_eq!(usage["cache_creation_input_tokens"], 2020);
@@ -308,11 +271,7 @@ mod tests {
             b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":15}}\n\n",
             b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ];
-        let mut ext = UsageExtractor::streaming();
-        for chunk in &chunks {
-            ext.process_chunk(chunk);
-        }
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&chunks).unwrap();
         assert_eq!(usage["input_tokens"], 25);
         assert_eq!(usage["output_tokens"], 15);
     }
@@ -344,11 +303,7 @@ mod tests {
             b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":10682,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":510,\"server_tool_use\":{\"web_search_requests\":1}}}\n\n",
             b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ];
-        let mut ext = UsageExtractor::streaming();
-        for chunk in &chunks {
-            ext.process_chunk(chunk);
-        }
-        let usage = ext.finish().unwrap();
+        let usage = extract_usage_streaming(&chunks).unwrap();
         assert_eq!(usage["input_tokens"], 10682);
         assert_eq!(usage["output_tokens"], 510);
         assert_eq!(usage["server_tool_use"]["web_search_requests"], 1);

@@ -1,4 +1,5 @@
-mod usage_extractor;
+mod frame;
+mod inspect;
 
 use std::sync::Arc;
 
@@ -14,7 +15,10 @@ use conduit_core::{Config, ProviderConfig};
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
 
-use crate::usage_extractor::UsageExtractor;
+use tokio::sync::mpsc;
+
+use crate::frame::Framer;
+use crate::inspect::{Inspector, Report, UsageInspector, reporter};
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -28,6 +32,7 @@ const STRIPPED_RESPONSE_HEADERS: &[&str] = &["transfer-encoding", "connection", 
 
 pub struct AppState {
     pub http_client: reqwest::Client,
+    pub report_tx: mpsc::UnboundedSender<Report>,
 }
 
 struct ProviderContext {
@@ -36,10 +41,14 @@ struct ProviderContext {
 }
 
 pub async fn start(config: Config) -> anyhow::Result<()> {
+    let (report_tx, report_rx) = mpsc::unbounded_channel();
+    tokio::spawn(reporter(report_rx));
+
     let state = Arc::new(AppState {
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300)) // TODO: make configurable, and handle better with SSE?
             .build()?,
+        report_tx,
     });
     let app = build_router(&config, state);
 
@@ -135,19 +144,25 @@ async fn proxy_handler(
     // TODO: use the upstream URL to figure out the provider...
 
     let provider_name = provider.name.clone();
+    let report_tx = state.report_tx.clone();
     tokio::spawn(async move {
         let mut stream = up_stream;
 
-        let mut usage_extractor = if is_streaming {
-            UsageExtractor::streaming()
+        let mut framer = if is_streaming {
+            Framer::streaming()
         } else {
-            UsageExtractor::unary()
+            Framer::unary()
         };
+        let mut inspectors: Vec<Box<dyn Inspector>> = vec![Box::new(UsageInspector::new())];
 
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    usage_extractor.process_chunk(&bytes);
+                    for frame in framer.process_chunk(&bytes) {
+                        for inspector in &mut inspectors {
+                            inspector.on_frame(&frame);
+                        }
+                    }
                     if tx.send(Ok(bytes)).await.is_err() {
                         break;
                     }
@@ -163,10 +178,17 @@ async fn proxy_handler(
                 }
             }
         }
-        if let Some(usage) = usage_extractor.finish() {
-            // TODO: do something with the usage
-            tracing::debug!(provider = %provider_name, %usage, "usage extracted");
-            println!("{:?}", usage);
+
+        for frame in framer.finish() {
+            for inspector in &mut inspectors {
+                inspector.on_frame(&frame);
+            }
+        }
+
+        for inspector in &mut inspectors {
+            for report in inspector.finish() {
+                let _ = report_tx.send(report);
+            }
         }
     });
 
@@ -201,8 +223,10 @@ pub(crate) mod testutil {
     use super::*;
 
     pub fn test_state() -> Arc<AppState> {
+        let (report_tx, _report_rx) = mpsc::unbounded_channel();
         Arc::new(AppState {
             http_client: reqwest::Client::new(),
+            report_tx,
         })
     }
 }
@@ -422,7 +446,7 @@ mod tests_openai_chat_completions {
     }
 
     #[tokio::test]
-    async fn normal_requests() -> anyhow::Result<()> {
+    async fn openai_cc_unary() -> anyhow::Result<()> {
         let app = stub_app().await;
 
         let resp = app
@@ -444,7 +468,7 @@ mod tests_openai_chat_completions {
     }
 
     #[tokio::test]
-    async fn streaming_responses_without_usage() -> anyhow::Result<()> {
+    async fn openai_cc_streaming_without_usage() -> anyhow::Result<()> {
         let app = stub_app().await;
 
         let resp = app
@@ -470,7 +494,7 @@ mod tests_openai_chat_completions {
     }
 
     #[tokio::test]
-    async fn streaming_responses_with_usage() -> anyhow::Result<()> {
+    async fn openai_cc_streaming_with_usage() -> anyhow::Result<()> {
         let app = stub_app().await;
 
         let resp = app

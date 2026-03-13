@@ -1,3 +1,5 @@
+mod usage_extractor;
+
 use std::sync::Arc;
 
 use axum::Extension;
@@ -11,6 +13,8 @@ use bytes::Bytes;
 use conduit_core::{Config, ProviderConfig};
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
+
+use crate::usage_extractor::UsageExtractor;
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -122,21 +126,28 @@ async fn proxy_handler(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(64);
 
+    let is_streaming = up_res_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.starts_with("text/event-stream"))
+        .unwrap_or(false);
+
+    // TODO: use the upstream URL to figure out the provider...
+
     let provider_name = provider.name.clone();
     tokio::spawn(async move {
         let mut stream = up_stream;
 
-        tracing::warn!(provider = %provider_name, "we haven't implemented response processing yet!");
+        let mut usage_extractor = if is_streaming {
+            UsageExtractor::streaming()
+        } else {
+            UsageExtractor::unary()
+        };
 
-        // TODO: Extract the full "usage object" from the response.
-
-        // 0. figure out if we are in streaming mode (SSE), content-type: text/event-stream?
-
-        // 1. setup buffer here
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    // 2. append to buffer
+                    usage_extractor.process_chunk(&bytes);
                     if tx.send(Ok(bytes)).await.is_err() {
                         break;
                     }
@@ -152,8 +163,11 @@ async fn proxy_handler(
                 }
             }
         }
-        // 3. if sse, parse SSE events from buffer and extract usage object from the final event
-        //    if not, parse buffer as JSON and extract usage object
+        if let Some(usage) = usage_extractor.finish() {
+            // TODO: do something with the usage
+            tracing::debug!(provider = %provider_name, %usage, "usage extracted");
+            println!("{:?}", usage);
+        }
     });
 
     let response_body_stream = async_stream::stream! {

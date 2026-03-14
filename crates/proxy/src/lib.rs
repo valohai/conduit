@@ -17,6 +17,8 @@ use tokio::net::TcpListener;
 
 use tokio::sync::mpsc;
 
+use uuid::Uuid;
+
 use crate::frame::Framer;
 use crate::inspect::{Inspector, Report, UsageInspector, reporter};
 
@@ -143,6 +145,9 @@ async fn proxy_handler(
 
     // TODO: use the upstream URL to figure out the provider...
 
+    // identity of _a thing_ that transits through this proxy
+    let transit_id = Uuid::now_v7();
+
     let provider_name = provider.name.clone();
     let report_tx = state.report_tx.clone();
     tokio::spawn(async move {
@@ -153,7 +158,8 @@ async fn proxy_handler(
         } else {
             Framer::unary()
         };
-        let mut inspectors: Vec<Box<dyn Inspector>> = vec![Box::new(UsageInspector::new())];
+        let mut inspectors: Vec<Box<dyn Inspector>> =
+            vec![Box::new(UsageInspector::new(transit_id))];
 
         while let Some(chunk) = stream.next().await {
             match chunk {

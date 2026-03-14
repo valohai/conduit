@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::frame::Frame;
 
@@ -15,7 +16,13 @@ pub trait Inspector: Send {
 }
 
 #[derive(Debug)]
-pub enum Report {
+pub struct Report {
+    pub transit_id: Uuid,
+    pub payload: ReportPayload,
+}
+
+#[derive(Debug)]
+pub enum ReportPayload {
     Usage(Value),
 }
 

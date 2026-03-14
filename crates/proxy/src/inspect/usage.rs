@@ -1,15 +1,20 @@
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::frame::Frame;
-use crate::inspect::{Inspector, Report};
+use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct UsageInspector {
+    transit_id: Uuid,
     usage: Option<Value>,
 }
 
 impl UsageInspector {
-    pub fn new() -> Self {
-        Self { usage: None }
+    pub fn new(transit_id: Uuid) -> Self {
+        Self {
+            transit_id,
+            usage: None,
+        }
     }
 }
 
@@ -23,7 +28,14 @@ impl Inspector for UsageInspector {
 
     fn finish(&mut self) -> Vec<Report> {
         tracing::trace!("finish: {:?}", self.usage);
-        self.usage.take().map(Report::Usage).into_iter().collect()
+        self.usage
+            .take()
+            .map(|usage| Report {
+                transit_id: self.transit_id,
+                payload: ReportPayload::Usage(usage),
+            })
+            .into_iter()
+            .collect()
     }
 }
 
@@ -61,7 +73,7 @@ mod tests {
     use serde_json::json;
 
     fn extract_usage(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Value> {
-        let mut inspector = UsageInspector::new();
+        let mut inspector = UsageInspector::new(Uuid::nil());
         for chunk in chunks {
             for frame in framer.process_chunk(chunk) {
                 inspector.on_frame(&frame);
@@ -73,7 +85,9 @@ mod tests {
         inspector
             .finish()
             .into_iter()
-            .map(|Report::Usage(v)| v)
+            .map(|r| match r.payload {
+                ReportPayload::Usage(v) => v,
+            })
             .next()
     }
 

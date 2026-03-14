@@ -69,4 +69,6 @@ cp .env.example .env
 vim .env
 uv run --env-file .env python/anthropic_messages.py
 uv run --env-file .env python/anthropic_messages_streaming.py
+uv run --env-file .env python/openai_responses.py
+uv run --env-file .env python/openai_responses_streaming.py
 ```

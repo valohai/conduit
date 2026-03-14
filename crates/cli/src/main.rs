@@ -1,5 +1,7 @@
-use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 struct Cli {
@@ -44,9 +46,15 @@ async fn main() -> anyhow::Result<()> {
     let config = conduit_core::Config::load(cli.config_path)?;
     tracing::debug!(?config, "config loaded");
 
+    // TODO: make database path configurable; defaulting to "conduit.db"
+    let usage_storage = conduit_storage::SqliteUsageStorage::new("sqlite:conduit.db").await?;
+    let storages = conduit_core::Storages {
+        usage: Arc::new(usage_storage),
+    };
+
     let cmd = cli.command.unwrap_or(Commands::Proxy);
     match cmd {
-        Commands::Proxy => conduit_proxy::start(config).await?,
+        Commands::Proxy => conduit_proxy::start(config, storages).await?,
     }
 
     Ok(())

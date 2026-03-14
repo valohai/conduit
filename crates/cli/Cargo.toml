@@ -12,6 +12,7 @@ anyhow.workspace = true
 clap.workspace = true
 conduit-core.workspace = true
 conduit-proxy.workspace = true
+conduit-storage.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

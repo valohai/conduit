@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use bytes::Bytes;
-use conduit_core::{Config, ProviderConfig};
+use conduit_core::{Config, ProviderConfig, Storages};
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
 
@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::frame::Framer;
-use crate::inspect::{Inspector, Report, UsageInspector, reporter};
+use crate::inspect::{Inspector, Report, UsageInspector, report_processor};
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -42,9 +42,9 @@ struct ProviderContext {
     upstream: String,
 }
 
-pub async fn start(config: Config) -> anyhow::Result<()> {
+pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
     let (report_tx, report_rx) = mpsc::unbounded_channel();
-    tokio::spawn(reporter(report_rx));
+    tokio::spawn(report_processor(report_rx, storages));
 
     let state = Arc::new(AppState {
         http_client: reqwest::Client::builder()

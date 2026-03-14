@@ -2,10 +2,13 @@ mod usage;
 
 pub use usage::UsageInspector;
 
+use std::pin::pin;
 use std::time::Duration;
 
+use conduit_core::{Storages, UsageRecord};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep};
 use uuid::Uuid;
 
 use crate::frame::Frame;
@@ -26,27 +29,60 @@ pub enum ReportPayload {
     Usage(Value),
 }
 
-pub async fn reporter(mut rx: mpsc::UnboundedReceiver<Report>) {
-    let mut batch = Vec::with_capacity(64);
+const BATCH_SIZE: usize = 64;
+const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages: Storages) {
+    let mut pending_usages: Vec<UsageRecord> = Vec::with_capacity(BATCH_SIZE);
+    let mut usage_deadline = pin!(sleep(FLUSH_INTERVAL));
     loop {
         tokio::select! {
-            Some(report) = rx.recv() => {
-                batch.push(report);
-                if batch.len() >= 64 {
-                    flush(&mut batch).await;
+            maybe_report = rx.recv() => {
+                let Some(report) = maybe_report else {
+                    // channel closed, flush everything pending
+                    store_pending_usages(&mut pending_usages, &storages).await;
+                    break;
+                };
+
+                match report.payload {
+                    ReportPayload::Usage(usage) => {
+                        pending_usages.push(UsageRecord {
+                            transit_id: report.transit_id,
+                            usage,
+                        });
+                    }
+                }
+
+                if let Some(usages) = take_if_pending_usages_full(&mut pending_usages) {
+                    store_usages(usages, &storages).await;
+                    usage_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                if !batch.is_empty() {
-                    flush(&mut batch).await;
-                }
+            _ = &mut usage_deadline => {
+                // flush usages on interval
+                store_pending_usages(&mut pending_usages, &storages).await;
+                usage_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
             }
         }
     }
 }
 
-async fn flush(batch: &mut Vec<Report>) {
-    for report in batch.drain(..) {
-        tracing::debug!(?report, "flushing report");
+async fn store_pending_usages(pending_usage: &mut Vec<UsageRecord>, storages: &Storages) {
+    if !pending_usage.is_empty() {
+        store_usages(std::mem::take(pending_usage), storages).await;
+    }
+}
+
+async fn store_usages(records: Vec<UsageRecord>, storages: &Storages) {
+    if let Err(err) = storages.usage.store_usages(records).await {
+        tracing::error!(error = %err, "failed to store usage");
+    }
+}
+
+fn take_if_pending_usages_full(batch: &mut Vec<UsageRecord>) -> Option<Vec<UsageRecord>> {
+    if batch.len() >= BATCH_SIZE {
+        Some(std::mem::take(batch))
+    } else {
+        None
     }
 }

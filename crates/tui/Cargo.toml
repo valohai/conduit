@@ -7,7 +7,10 @@ edition.workspace = true
 anyhow.workspace = true
 conduit-core.workspace = true
 crossterm.workspace = true
+serde_json.workspace = true
 ratatui.workspace = true
+tokio.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

@@ -24,7 +24,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1"
 toml = "1"
 tower = { version = "0.5", features = ["util"] }

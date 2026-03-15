@@ -417,6 +417,9 @@ dependencies = [
  "conduit-core",
  "crossterm",
  "ratatui",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

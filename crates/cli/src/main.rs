@@ -19,6 +19,8 @@ struct Cli {
 enum Commands {
     #[command(about = "Run the proxy server [default command]")]
     Proxy,
+    #[command(about = "Open the terminal-based dashboard")]
+    Dashboard,
 }
 
 #[tokio::main]
@@ -55,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let cmd = cli.command.unwrap_or(Commands::Proxy);
     match cmd {
         Commands::Proxy => conduit_proxy::start(config, storages).await?,
+        Commands::Dashboard => conduit_tui::start(config, storages)?,
     }
 
     Ok(())

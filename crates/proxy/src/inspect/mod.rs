@@ -5,7 +5,7 @@ pub use usage::UsageInspector;
 use std::pin::pin;
 use std::time::Duration;
 
-use conduit_core::{Storages, UsageRecord};
+use conduit_core::{Storages, UsageDeclaration};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
@@ -33,7 +33,7 @@ const BATCH_SIZE: usize = 64;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages: Storages) {
-    let mut pending_usages: Vec<UsageRecord> = Vec::with_capacity(BATCH_SIZE);
+    let mut pending_usages: Vec<UsageDeclaration> = Vec::with_capacity(BATCH_SIZE);
     let mut usage_deadline = pin!(sleep(FLUSH_INTERVAL));
     loop {
         tokio::select! {
@@ -46,7 +46,7 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
 
                 match report.payload {
                     ReportPayload::Usage(usage) => {
-                        pending_usages.push(UsageRecord {
+                        pending_usages.push(UsageDeclaration {
                             transit_id: report.transit_id,
                             usage,
                         });
@@ -67,19 +67,19 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
     }
 }
 
-async fn store_pending_usages(pending_usage: &mut Vec<UsageRecord>, storages: &Storages) {
+async fn store_pending_usages(pending_usage: &mut Vec<UsageDeclaration>, storages: &Storages) {
     if !pending_usage.is_empty() {
         store_usages(std::mem::take(pending_usage), storages).await;
     }
 }
 
-async fn store_usages(records: Vec<UsageRecord>, storages: &Storages) {
-    if let Err(err) = storages.usage.store_usages(records).await {
-        tracing::error!(error = %err, "failed to store usage");
+async fn store_usages(declarations: Vec<UsageDeclaration>, storages: &Storages) {
+    if let Err(err) = storages.usage.store_usages(declarations).await {
+        tracing::error!(error = %err, "failed to store usages");
     }
 }
 
-fn take_if_pending_usages_full(batch: &mut Vec<UsageRecord>) -> Option<Vec<UsageRecord>> {
+fn take_if_pending_usages_full(batch: &mut Vec<UsageDeclaration>) -> Option<Vec<UsageDeclaration>> {
     if batch.len() >= BATCH_SIZE {
         Some(std::mem::take(batch))
     } else {

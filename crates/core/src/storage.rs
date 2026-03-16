@@ -13,7 +13,7 @@ pub struct Storages {
 pub trait UsageStorage: Send + Sync {
     fn store_usages(
         &self,
-        records: Vec<UsageRecord>,
+        declarations: Vec<UsageDeclaration>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
     fn list_usages(
@@ -22,13 +22,19 @@ pub trait UsageStorage: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<UsagePage>> + Send + '_>>;
 }
 
-pub struct UsageRecord {
+pub struct UsageDeclaration {
     pub transit_id: Uuid,
     pub usage: Value,
 }
 
+pub struct UsageRecord {
+    pub transit_id: Uuid,
+    pub stored_at: chrono::DateTime<chrono::Utc>,
+    pub usage: Value,
+}
+
 pub struct UsageQuery {
-    pub cursor: Option<Uuid>,
+    pub cursor: Option<chrono::DateTime<chrono::Utc>>,
     pub direction: Direction,
     pub limit: NonZeroU32,
 }

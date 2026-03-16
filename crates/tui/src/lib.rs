@@ -12,7 +12,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{
     Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
-use uuid::Uuid;
 
 const PAGE_SIZE: u32 = 50;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -53,7 +52,7 @@ struct App {
     _config: Config,
     should_quit: bool,
     usage_records: Vec<UsageRecord>,
-    latest_usage_transit_id: Option<Uuid>,
+    latest_usage_stored_at: Option<chrono::DateTime<chrono::Utc>>,
     table_state: TableState,
     auto_follow: bool,
     is_loading: bool,
@@ -73,7 +72,7 @@ impl App {
             _config,
             should_quit: false,
             usage_records: Vec::new(),
-            latest_usage_transit_id: None,
+            latest_usage_stored_at: None,
             table_state: TableState::default(),
             auto_follow: true,
             is_loading: true,
@@ -113,7 +112,7 @@ impl App {
                         })
                         .collect();
                     if !new_records.is_empty() {
-                        self.latest_usage_transit_id = new_records.last().map(|r| r.transit_id);
+                        self.latest_usage_stored_at = new_records.last().map(|r| r.stored_at);
                         self.usage_records.extend(new_records);
                         if self.auto_follow {
                             self.select_last();
@@ -270,11 +269,11 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         })
         .await;
 
-    let newest_id = match initial {
+    let mut cursor = match initial {
         Ok(page) => {
-            let newest = page.records.last().map(|r| r.transit_id);
+            let stored_at = page.records.last().map(|r| r.stored_at);
             let _ = tx.send(PollMessage::Page(page));
-            newest
+            stored_at
         }
         Err(e) => {
             let _ = tx.send(PollMessage::Error(e.to_string()));
@@ -282,7 +281,6 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         }
     };
 
-    let mut cursor = newest_id;
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
@@ -299,7 +297,7 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         match result {
             Ok(page) => {
                 if let Some(last) = page.records.last() {
-                    cursor = Some(last.transit_id);
+                    cursor = Some(last.stored_at);
                 }
                 let _ = tx.send(PollMessage::Page(page));
             }

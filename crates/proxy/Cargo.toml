@@ -8,6 +8,7 @@ anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 conduit-core.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

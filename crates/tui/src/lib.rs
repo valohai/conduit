@@ -31,7 +31,7 @@ pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
 
     terminal::enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
-    // io::stdout().execute(crossterm::event::EnableMouseCapture)?;
+    io::stdout().execute(crossterm::event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
     let mut app = App::new(config, storages);
@@ -43,7 +43,7 @@ pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
 
 fn restore_terminal() {
     let _ = io::stdout().execute(crossterm::cursor::Show);
-    // let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
+    let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
     let _ = io::stdout().execute(LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 }
@@ -275,6 +275,22 @@ impl App {
                         self.auto_follow = !self.auto_follow;
                         if self.auto_follow {
                             self.select_last();
+                        }
+                    }
+                    _ => {}
+                },
+                Event::Mouse(mouse) => match mouse.kind {
+                    event::MouseEventKind::ScrollUp => {
+                        self.auto_follow = false;
+                        let i = self.table_state.selected().unwrap_or(0);
+                        self.table_state.select(Some(i.saturating_sub(1)));
+                    }
+                    event::MouseEventKind::ScrollDown => {
+                        let i = self.table_state.selected().unwrap_or(0);
+                        let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
+                        self.table_state.select(Some(next));
+                        if next == self.usage_records.len().saturating_sub(1) {
+                            self.auto_follow = true;
                         }
                     }
                     _ => {}

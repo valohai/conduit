@@ -146,7 +146,8 @@ impl App {
         let header = Row::new(vec![
             Cell::from("TID"),
             Cell::from("Model"),
-            Cell::from("Usage"),
+            Cell::from("Input Tokens"),
+            Cell::from("Output Tokens"),
         ])
         .style(
             Style::default()
@@ -164,11 +165,25 @@ impl App {
                     Some(m) => m.to_string(),
                     None => "-".to_string(),
                 };
-                let usage_str = serde_json::to_string(&record.usage).unwrap_or_default();
+                let input_tokens = record
+                    .usage
+                    .get("prompt_tokens")
+                    .or_else(|| record.usage.get("input_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let output_tokens = record
+                    .usage
+                    .get("completion_tokens")
+                    .or_else(|| record.usage.get("output_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
                 Row::new(vec![
                     Cell::from(short_id.to_string()),
                     Cell::from(model_str),
-                    Cell::from(usage_str),
+                    Cell::from(input_tokens),
+                    Cell::from(output_tokens),
                 ])
             })
             .collect();
@@ -186,7 +201,8 @@ impl App {
         let widths = [
             Constraint::Length(8),
             Constraint::Length(20),
-            Constraint::Min(20),
+            Constraint::Length(12),
+            Constraint::Length(13),
         ];
         let table = Table::new(rows, widths)
             .header(header)

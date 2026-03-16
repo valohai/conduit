@@ -143,7 +143,12 @@ impl App {
         let [table_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
-        let header = Row::new(vec![Cell::from("TID"), Cell::from("Usage")]).style(
+        let header = Row::new(vec![
+            Cell::from("TID"),
+            Cell::from("Model"),
+            Cell::from("Usage"),
+        ])
+        .style(
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Cyan),
@@ -155,9 +160,14 @@ impl App {
             .map(|record| {
                 let id = record.transit_id.to_string();
                 let short_id = &id[id.len() - 8..];
+                let model_str = match record.model.as_deref() {
+                    Some(m) => m.to_string(),
+                    None => "-".to_string(),
+                };
                 let usage_str = serde_json::to_string(&record.usage).unwrap_or_default();
                 Row::new(vec![
                     Cell::from(short_id.to_string()),
+                    Cell::from(model_str),
                     Cell::from(usage_str),
                 ])
             })
@@ -173,7 +183,11 @@ impl App {
             );
         }
 
-        let widths = [Constraint::Length(8), Constraint::Min(20)];
+        let widths = [
+            Constraint::Length(8),
+            Constraint::Length(20),
+            Constraint::Min(20),
+        ];
         let table = Table::new(rows, widths)
             .header(header)
             .block(Block::default().title(" ⚡️ Conduit ").borders(Borders::ALL))

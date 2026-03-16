@@ -27,6 +27,7 @@ impl SqliteUsageStorage {
             "CREATE TABLE IF NOT EXISTS usage (
                 transit_id TEXT PRIMARY KEY NOT NULL,
                 stored_at TEXT NOT NULL,
+                model TEXT,
                 usage_json TEXT NOT NULL
             )",
         )
@@ -60,10 +61,11 @@ impl UsageStorage for SqliteUsageStorage {
                 let transit_id = declaration.transit_id.to_string();
                 let usage_json = declaration.usage.to_string();
                 sqlx::query(
-                    "INSERT INTO usage (transit_id, stored_at, usage_json) VALUES (?, ?, ?)",
+                    "INSERT INTO usage (transit_id, stored_at, model, usage_json) VALUES (?, ?, ?, ?)",
                 )
                 .bind(&transit_id)
                 .bind(&stored_at)
+                .bind(&declaration.model)
                 .bind(&usage_json)
                 .execute(&mut *tx)
                 .await?;
@@ -87,7 +89,7 @@ impl UsageStorage for SqliteUsageStorage {
                 (Some(cursor), Direction::Newer) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT transit_id, stored_at, usage_json FROM usage
+                        "SELECT transit_id, stored_at, model, usage_json FROM usage
                          WHERE stored_at > ?
                          ORDER BY stored_at ASC
                          LIMIT ?",
@@ -100,7 +102,7 @@ impl UsageStorage for SqliteUsageStorage {
                 (Some(cursor), Direction::Older) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT transit_id, stored_at, usage_json FROM usage
+                        "SELECT transit_id, stored_at, model, usage_json FROM usage
                          WHERE stored_at < ?
                          ORDER BY stored_at DESC
                          LIMIT ?",
@@ -112,7 +114,7 @@ impl UsageStorage for SqliteUsageStorage {
                 }
                 (None, Direction::Newer) => {
                     sqlx::query(
-                        "SELECT transit_id, stored_at, usage_json FROM usage
+                        "SELECT transit_id, stored_at, model, usage_json FROM usage
                          ORDER BY stored_at ASC
                          LIMIT ?",
                     )
@@ -122,7 +124,7 @@ impl UsageStorage for SqliteUsageStorage {
                 }
                 (None, Direction::Older) => {
                     sqlx::query(
-                        "SELECT transit_id, stored_at, usage_json FROM usage
+                        "SELECT transit_id, stored_at, model, usage_json FROM usage
                          ORDER BY stored_at DESC
                          LIMIT ?",
                     )
@@ -139,10 +141,12 @@ impl UsageStorage for SqliteUsageStorage {
                 .map(|row| {
                     let transit_id: String = row.get("transit_id");
                     let stored_at: String = row.get("stored_at");
+                    let model: Option<String> = row.get("model");
                     let usage_json: String = row.get("usage_json");
                     UsageRecord {
                         transit_id: transit_id.parse().unwrap(),
                         stored_at: parse_timestamp(&stored_at),
+                        model,
                         usage: serde_json::from_str(&usage_json).unwrap(),
                     }
                 })
@@ -183,6 +187,7 @@ mod tests {
         let declarations: Vec<_> = (0..count)
             .map(|_| UsageDeclaration {
                 transit_id: Uuid::now_v7(),
+                model: Some("test-model".into()),
                 usage: json!({"input_tokens": 10, "output_tokens": 20}),
             })
             .collect();
@@ -323,6 +328,7 @@ mod tests {
 
         let late_declaration = UsageDeclaration {
             transit_id: late_id,
+            model: None,
             usage: json!({"order": "second_to_arrive_first_to_store"}),
         };
         storage.store_usages(vec![late_declaration]).await.unwrap();
@@ -340,6 +346,7 @@ mod tests {
 
         let early_declaration = UsageDeclaration {
             transit_id: early_id,
+            model: None,
             usage: json!({"order": "first_to_arrive_second_to_store"}),
         };
         storage.store_usages(vec![early_declaration]).await.unwrap();

@@ -13,6 +13,7 @@ use axum::routing::{any, get};
 use bytes::Bytes;
 use conduit_core::{Config, ProviderConfig, Storages};
 use futures_util::StreamExt;
+use serde_json::Value;
 use tokio::net::TcpListener;
 
 use tokio::sync::mpsc;
@@ -116,6 +117,9 @@ async fn proxy_handler(
         }
         upstream_req = upstream_req.header(key, value);
     }
+
+    let body_for_inspectors: Option<Value> = serde_json::from_slice(&req_body_bytes).ok();
+    let headers_for_inspectors = parts.headers.clone();
     upstream_req = upstream_req.body(req_body_bytes);
 
     let upstream_response = match upstream_req.send().await {
@@ -133,7 +137,7 @@ async fn proxy_handler(
 
     let up_status = upstream_response.status();
     let up_res_headers = upstream_response.headers().clone();
-    let up_stream = upstream_response.bytes_stream();
+    let up_body_stream = upstream_response.bytes_stream();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(64);
 
@@ -151,15 +155,20 @@ async fn proxy_handler(
     let provider_name = provider.name.clone();
     let report_tx = state.report_tx.clone();
     tokio::spawn(async move {
-        let mut stream = up_stream;
+        let mut stream = up_body_stream;
 
         let mut framer = if is_streaming {
             Framer::streaming()
         } else {
             Framer::unary()
         };
+
         let mut inspectors: Vec<Box<dyn Inspector>> =
             vec![Box::new(UsageInspector::new(transit_id))];
+
+        for inspector in &mut inspectors {
+            inspector.on_request(&headers_for_inspectors, body_for_inspectors.as_ref());
+        }
 
         while let Some(chunk) = stream.next().await {
             match chunk {

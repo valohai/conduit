@@ -11,10 +11,13 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
 use uuid::Uuid;
 
+use axum::http::HeaderMap;
+
 use crate::frame::Frame;
 
 pub trait Inspector: Send {
-    fn on_frame(&mut self, event: &Frame);
+    fn on_request(&mut self, _headers: &HeaderMap, _body_json: Option<&Value>) {}
+    fn on_frame(&mut self, frame: &Frame);
     fn finish(&mut self) -> Vec<Report>;
 }
 
@@ -26,7 +29,7 @@ pub struct Report {
 
 #[derive(Debug)]
 pub enum ReportPayload {
-    Usage(Value),
+    Usage { model: Option<String>, usage: Value },
 }
 
 const BATCH_SIZE: usize = 64;
@@ -45,9 +48,10 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
                 };
 
                 match report.payload {
-                    ReportPayload::Usage(usage) => {
+                    ReportPayload::Usage { model, usage } => {
                         pending_usages.push(UsageDeclaration {
                             transit_id: report.transit_id,
+                            model,
                             usage,
                         });
                     }

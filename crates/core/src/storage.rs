@@ -24,12 +24,14 @@ pub trait UsageStorage: Send + Sync {
 
 pub struct UsageDeclaration {
     pub transit_id: Uuid,
+    pub model: Option<String>,
     pub usage: Value,
 }
 
 pub struct UsageRecord {
     pub transit_id: Uuid,
     pub stored_at: chrono::DateTime<chrono::Utc>,
+    pub model: Option<String>,
     pub usage: Value,
 }
 

@@ -1,11 +1,14 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+use axum::http::HeaderMap;
+
 use crate::frame::Frame;
 use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct UsageInspector {
     transit_id: Uuid,
+    model: Option<String>,
     usage: Option<Value>,
 }
 
@@ -13,12 +16,17 @@ impl UsageInspector {
     pub fn new(transit_id: Uuid) -> Self {
         Self {
             transit_id,
+            model: None,
             usage: None,
         }
     }
 }
 
 impl Inspector for UsageInspector {
+    fn on_request(&mut self, _headers: &HeaderMap, body_json: Option<&Value>) {
+        self.model = body_json.and_then(|b| b["model"].as_str().map(String::from));
+    }
+
     fn on_frame(&mut self, frame: &Frame) {
         tracing::trace!("on_frame: {:?}", frame);
         match frame {
@@ -32,7 +40,10 @@ impl Inspector for UsageInspector {
             .take()
             .map(|usage| Report {
                 transit_id: self.transit_id,
-                payload: ReportPayload::Usage(usage),
+                payload: ReportPayload::Usage {
+                    model: self.model.take(),
+                    usage,
+                },
             })
             .into_iter()
             .collect()
@@ -86,7 +97,7 @@ mod tests {
             .finish()
             .into_iter()
             .map(|r| match r.payload {
-                ReportPayload::Usage(v) => v,
+                ReportPayload::Usage { usage, .. } => usage,
             })
             .next()
     }
@@ -100,6 +111,31 @@ mod tests {
     fn extract_usage_streaming(chunks: &[&[u8]]) -> Option<Value> {
         let mut framer = Framer::streaming();
         extract_usage(&mut framer, chunks)
+    }
+
+    #[test]
+    fn model_extracted_from_request_body() {
+        let request_body = json!({"model": "gpt-5.4", "messages": []});
+        let response_body = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5}});
+        let response_bytes = serde_json::to_vec(&response_body).unwrap();
+
+        let mut framer = Framer::unary();
+        let mut inspector = UsageInspector::new(Uuid::nil());
+        inspector.on_request(&HeaderMap::new(), Some(&request_body));
+        for frame in framer.process_chunk(&response_bytes) {
+            inspector.on_frame(&frame);
+        }
+        for frame in framer.finish() {
+            inspector.on_frame(&frame);
+        }
+
+        let reports = inspector.finish();
+        assert_eq!(reports.len(), 1);
+        let report_payload = reports.into_iter().next().unwrap().payload;
+        let model = match report_payload {
+            ReportPayload::Usage { model, .. } => model,
+        };
+        assert_eq!(model, Some("gpt-5.4".to_string()));
     }
 
     #[test]
@@ -124,6 +160,7 @@ mod tests {
         // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
         let body = json!({
             "id": "chatcmpl-test",
+            "model": "gpt-5.4",
             "usage": {
               "prompt_tokens": 19,
               "completion_tokens": 10,
@@ -148,9 +185,11 @@ mod tests {
 
     #[test]
     fn streaming_openai_cc_usage() {
+        // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create (under Streaming tab)
+        // NB "model" field seems to exist on all event types?
         let usage = extract_usage_streaming(&[
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
-            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+            b"data: {\"model\": \"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+            b"data: {\"model\": \"gpt-5.4\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
             b"data: [DONE]\n\n",
         ])
         .unwrap();
@@ -198,6 +237,7 @@ mod tests {
         // https://developers.openai.com/api/reference/resources/responses/methods/create
         let body = json!({
             "id": "resp_test123",
+            "model": "gpt-5.4",
             "usage": {
               "input_tokens": 36,
               "input_tokens_details": {
@@ -221,9 +261,10 @@ mod tests {
     #[test]
     fn streaming_openai_responses_usage() {
         // https://developers.openai.com/api/reference/resources/responses/methods/create (under Streaming tab)
+        // NB: "model" field seems to exist on event type: response.created, response.in_progress, response.completed
         let chunks: Vec<&[u8]> = vec![
             b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_67c9fdcecf488190bdd9a0409de3a1ec07b8b0ad4e5eb654\",\"object\":\"response\",\"created_at\":1741290958,\"status\":\"in_progress\",\"usage\":null}}\n\n",
-            b"event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_67c9fdcecf488190bdd9a0409de3a1ec07b8b0ad4e5eb654\",\"object\":\"response\",\"status\":\"in_progress\",\"usage\":null}}\n\n",
+            b"event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_67c9fdcecf488190bdd9a0409de3a1ec07b8b0ad4e5eb654\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"usage\":null}}\n\n",
             b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_67c9fdcf37fc8190ba82116e33fb28c507b8b0ad4e5eb654\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
             b"event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_67c9fdcf37fc8190ba82116e33fb28c507b8b0ad4e5eb654\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}\n\n",
             b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_67c9fdcf37fc8190ba82116e33fb28c507b8b0ad4e5eb654\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hi\"}\n\n",
@@ -245,6 +286,7 @@ mod tests {
         // https://platform.claude.com/docs/en/api/messages/create
         let body = json!({
           "id": "msg_test123",
+          "model": "claude-opus-4-6",
           "usage": {
             "service_tier": "standard",
             "input_tokens": 2095,
@@ -275,6 +317,7 @@ mod tests {
     #[test]
     fn streaming_anthropic_messages_basic() {
         // https://platform.claude.com/docs/en/build-with-claude/streaming#basic-streaming-request
+        // "model" field seems to exist on `message_start` even type
         let chunks: Vec<&[u8]> = vec![
             b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test123\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-4-6\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n",
             b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",

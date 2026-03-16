@@ -2,6 +2,7 @@ use std::io;
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 
+use chrono_humanize::HumanTime;
 use conduit_core::{Config, Direction, Storages, UsagePage, UsageQuery, UsageRecord};
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -55,6 +56,7 @@ struct App {
     latest_usage_stored_at: Option<chrono::DateTime<chrono::Utc>>,
     table_state: TableState,
     auto_follow: bool,
+    use_relative_time: bool,
     is_loading: bool,
     error: Option<String>,
     poll_rx: mpsc::Receiver<PollMessage>,
@@ -75,6 +77,7 @@ impl App {
             latest_usage_stored_at: None,
             table_state: TableState::default(),
             auto_follow: true,
+            use_relative_time: true,
             is_loading: true,
             error: None,
             poll_rx: rx,
@@ -144,7 +147,7 @@ impl App {
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
         let header = Row::new(vec![
-            Cell::from("TID"),
+            Cell::from("Time"),
             Cell::from("Model"),
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
@@ -159,12 +162,17 @@ impl App {
             .usage_records
             .iter()
             .map(|record| {
-                let id = record.transit_id.to_string();
-                let short_id = &id[id.len() - 8..];
+                let time_ago = if self.use_relative_time {
+                    HumanTime::from(record.stored_at).to_string()
+                } else {
+                    record.stored_at.format("%Y-%m-%d %H:%M:%S").to_string()
+                };
+
                 let model_str = match record.model.as_deref() {
                     Some(m) => m.to_string(),
                     None => "-".to_string(),
                 };
+
                 let input_tokens = record
                     .usage
                     .get("prompt_tokens")
@@ -172,6 +180,7 @@ impl App {
                     .and_then(|v| v.as_u64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
+
                 let output_tokens = record
                     .usage
                     .get("completion_tokens")
@@ -179,8 +188,9 @@ impl App {
                     .and_then(|v| v.as_u64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
+
                 Row::new(vec![
-                    Cell::from(short_id.to_string()),
+                    Cell::from(time_ago),
                     Cell::from(model_str),
                     Cell::from(input_tokens),
                     Cell::from(output_tokens),
@@ -199,7 +209,7 @@ impl App {
         }
 
         let widths = [
-            Constraint::Length(8),
+            Constraint::Length(19),
             Constraint::Length(20),
             Constraint::Length(12),
             Constraint::Length(13),
@@ -226,9 +236,14 @@ impl App {
         } else {
             let follow = if self.auto_follow { "ON" } else { "OFF" };
             format!(
-                " {} records | auto-follow: {} | q: quit, F: toggle follow ",
+                " {} records | auto-follow: {} | q: quit, F: follow, T: {} ",
                 self.usage_records.len(),
                 follow,
+                if self.use_relative_time {
+                    "absolute time"
+                } else {
+                    "relative time"
+                },
             )
         };
         let status_style = if self.error.is_some() {
@@ -270,6 +285,9 @@ impl App {
                     KeyCode::End => {
                         self.auto_follow = true;
                         self.select_last();
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('T') => {
+                        self.use_relative_time = !self.use_relative_time;
                     }
                     KeyCode::Char('f') | KeyCode::Char('F') => {
                         self.auto_follow = !self.auto_follow;

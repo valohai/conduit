@@ -55,13 +55,14 @@ struct App {
     view: View,
     usage_records: Vec<UsageRecord>,
     latest_usage_stored_at: Option<chrono::DateTime<chrono::Utc>>,
-    table_state: TableState,
+    usage_table_state: TableState,
     auto_follow: bool,
     use_relative_time: bool,
+    usage_detail_scroll: u16,
     is_loading: bool,
-    error: Option<String>,
     poll_rx: mpsc::Receiver<PollMessage>,
     poll_abort: tokio::task::AbortHandle,
+    error: Option<String>,
 }
 
 impl App {
@@ -77,13 +78,14 @@ impl App {
             view: View::UsageListing,
             usage_records: Vec::new(),
             latest_usage_stored_at: None,
-            table_state: TableState::default(),
+            usage_table_state: TableState::default(),
             auto_follow: true,
             use_relative_time: true,
+            usage_detail_scroll: 0,
             is_loading: true,
-            error: None,
             poll_rx: rx,
             poll_abort: task.abort_handle(),
+            error: None,
         }
     }
 
@@ -99,12 +101,12 @@ impl App {
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
         match self.view {
-            View::UsageListing => self.render_listing(frame),
-            View::UsageDetail(index) => self.render_detail(frame, index),
+            View::UsageListing => self.render_usage_listing(frame),
+            View::UsageDetail(index) => self.render_usage_detail(frame, index),
         }
     }
 
-    fn render_listing(&mut self, frame: &mut ratatui::Frame) {
+    fn render_usage_listing(&mut self, frame: &mut ratatui::Frame) {
         let [table_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
@@ -181,11 +183,11 @@ impl App {
             .block(Block::default().title(" Usages ").borders(Borders::ALL))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        frame.render_stateful_widget(table, table_area, &mut self.table_state);
+        frame.render_stateful_widget(table, table_area, &mut self.usage_table_state);
 
         let content_len = self.usage_records.len();
         let viewport = self.visible_usage_table_rows(table_area.height);
-        let scroll_pos = self.table_state.selected().unwrap_or(0);
+        let scroll_pos = self.usage_table_state.selected().unwrap_or(0);
         let mut scrollbar_state = ScrollbarState::new(content_len.saturating_sub(viewport))
             .position(scroll_pos.saturating_sub(viewport / 2));
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
@@ -219,7 +221,7 @@ impl App {
         area_height.saturating_sub(3) as usize // borders + header
     }
 
-    fn render_detail(&self, frame: &mut ratatui::Frame, index: usize) {
+    fn render_usage_detail(&mut self, frame: &mut ratatui::Frame, index: usize) {
         let [content_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
@@ -253,16 +255,27 @@ impl App {
 
         lines.extend(json_highlight::json_to_lines(&usage_rec.usage));
 
-        let detail = Paragraph::new(lines).block(
-            Block::default()
-                .title(" Usage Details ")
-                .borders(Borders::ALL),
-        );
+        let content_len = lines.len();
+        let viewport = content_area.height.saturating_sub(2) as usize;
+        let max_scroll = content_len.saturating_sub(viewport) as u16;
+        self.usage_detail_scroll = self.usage_detail_scroll.min(max_scroll);
+        let detail = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" Usage Details ")
+                    .borders(Borders::ALL),
+            )
+            .scroll((self.usage_detail_scroll, 0));
         frame.render_widget(detail, content_area);
+
+        let mut scrollbar_state = ScrollbarState::new(content_len.saturating_sub(viewport))
+            .position(self.usage_detail_scroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        frame.render_stateful_widget(scrollbar, content_area, &mut scrollbar_state);
 
         let position = format!(" {}/{} ", index + 1, self.usage_records.len());
         let status = format!(
-            "{}| Backspace/Left/h: back, Up/k: previous, Down/j: next ",
+            "{}| Backspace/Left/h: back, Up/Down: scroll, [/]: prev/next record ",
             position,
         );
         frame.render_widget(
@@ -293,20 +306,20 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.auto_follow = false;
-                    let i = self.table_state.selected().unwrap_or(0);
-                    self.table_state.select(Some(i.saturating_sub(1)));
+                    let i = self.usage_table_state.selected().unwrap_or(0);
+                    self.usage_table_state.select(Some(i.saturating_sub(1)));
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let i = self.table_state.selected().unwrap_or(0);
+                    let i = self.usage_table_state.selected().unwrap_or(0);
                     let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                    self.table_state.select(Some(next));
+                    self.usage_table_state.select(Some(next));
                     if next == self.usage_records.len().saturating_sub(1) {
                         self.auto_follow = true;
                     }
                 }
                 KeyCode::Home => {
                     self.auto_follow = false;
-                    self.table_state.select(Some(0));
+                    self.usage_table_state.select(Some(0));
                 }
                 KeyCode::End => {
                     self.auto_follow = true;
@@ -326,13 +339,13 @@ impl App {
             Event::Mouse(mouse) => match mouse.kind {
                 event::MouseEventKind::ScrollUp => {
                     self.auto_follow = false;
-                    let i = self.table_state.selected().unwrap_or(0);
-                    self.table_state.select(Some(i.saturating_sub(1)));
+                    let i = self.usage_table_state.selected().unwrap_or(0);
+                    self.usage_table_state.select(Some(i.saturating_sub(1)));
                 }
                 event::MouseEventKind::ScrollDown => {
-                    let i = self.table_state.selected().unwrap_or(0);
+                    let i = self.usage_table_state.selected().unwrap_or(0);
                     let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                    self.table_state.select(Some(next));
+                    self.usage_table_state.select(Some(next));
                     if next == self.usage_records.len().saturating_sub(1) {
                         self.auto_follow = true;
                     }
@@ -345,9 +358,10 @@ impl App {
     }
 
     fn open_selected_detail(&mut self) {
-        if let Some(index) = self.table_state.selected()
+        if let Some(index) = self.usage_table_state.selected()
             && index < self.usage_records.len()
         {
+            self.usage_detail_scroll = 0;
             self.view = View::UsageDetail(index);
         }
     }
@@ -363,23 +377,54 @@ impl App {
                     self.view = View::UsageListing;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
+                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_add(1);
+                }
+                KeyCode::PageUp => {
+                    self.usage_detail_scroll =
+                        self.usage_detail_scroll.saturating_sub(PAGE_SIZE as u16);
+                }
+                KeyCode::PageDown => {
+                    self.usage_detail_scroll =
+                        self.usage_detail_scroll.saturating_add(PAGE_SIZE as u16);
+                }
+                KeyCode::Home => {
+                    self.usage_detail_scroll = 0;
+                }
+                KeyCode::End => {
+                    self.usage_detail_scroll = u16::MAX;
+                }
+                KeyCode::Char('[') => {
                     if let View::UsageDetail(index) = self.view
                         && index > 0
                     {
                         let new_index = index - 1;
+                        self.usage_detail_scroll = 0;
                         self.view = View::UsageDetail(new_index);
-                        self.table_state.select(Some(new_index));
+                        self.usage_table_state.select(Some(new_index));
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char(']') => {
                     if let View::UsageDetail(index) = self.view {
                         let max = self.usage_records.len().saturating_sub(1);
                         if index < max {
                             let new_index = index + 1;
+                            self.usage_detail_scroll = 0;
                             self.view = View::UsageDetail(new_index);
-                            self.table_state.select(Some(new_index));
+                            self.usage_table_state.select(Some(new_index));
                         }
                     }
+                }
+                _ => {}
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                event::MouseEventKind::ScrollUp => {
+                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_sub(3);
+                }
+                event::MouseEventKind::ScrollDown => {
+                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_add(3);
                 }
                 _ => {}
             },
@@ -425,9 +470,10 @@ impl App {
 
     fn select_last(&mut self) {
         if self.usage_records.is_empty() {
-            self.table_state.select(None);
+            self.usage_table_state.select(None);
         } else {
-            self.table_state.select(Some(self.usage_records.len() - 1));
+            self.usage_table_state
+                .select(Some(self.usage_records.len() - 1));
         }
     }
 }

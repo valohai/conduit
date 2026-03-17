@@ -1,3 +1,5 @@
+mod json_highlight;
+
 use std::io;
 use std::num::NonZeroU32;
 use std::sync::mpsc;
@@ -227,7 +229,7 @@ impl App {
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("Transit ID: ", label_style),
                 Span::raw(usage_rec.transit_id.to_string()),
@@ -245,7 +247,11 @@ impl App {
                 Span::styled("Model:      ", label_style),
                 Span::raw(usage_rec.model.as_deref().unwrap_or("-").to_string()),
             ]),
+            Line::raw(""),
+            Line::from(Span::styled("Full Usage:", label_style)),
         ];
+
+        lines.extend(json_highlight::json_to_lines(&usage_rec.usage));
 
         let detail = Paragraph::new(lines).block(
             Block::default()

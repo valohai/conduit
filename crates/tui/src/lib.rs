@@ -260,7 +260,11 @@ impl App {
         );
         frame.render_widget(detail, content_area);
 
-        let status = " Backspace/Left/h: back ";
+        let position = format!(" {}/{} ", index + 1, self.usage_records.len());
+        let status = format!(
+            "{}| Backspace/Left/h: back, Up/k: previous, Down/j: next ",
+            position,
+        );
         frame.render_widget(
             Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
             status_area,
@@ -357,6 +361,25 @@ impl App {
                 }
                 KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
                     self.view = View::UsageListing;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let View::UsageDetail(index) = self.view
+                        && index > 0
+                    {
+                        let new_index = index - 1;
+                        self.view = View::UsageDetail(new_index);
+                        self.table_state.select(Some(new_index));
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let View::UsageDetail(index) = self.view {
+                        let max = self.usage_records.len().saturating_sub(1);
+                        if index < max {
+                            let new_index = index + 1;
+                            self.view = View::UsageDetail(new_index);
+                            self.table_state.select(Some(new_index));
+                        }
+                    }
                 }
                 _ => {}
             },

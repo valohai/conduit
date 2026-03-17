@@ -10,17 +10,15 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    TableState,
 };
 
-const PAGE_SIZE: u32 = 50;
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-
-enum PollMessage {
-    Loading,
-    Page(UsagePage),
-    Error(String),
+enum View {
+    UsageListing,
+    UsageDetail(usize),
 }
 
 pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
@@ -52,6 +50,7 @@ fn restore_terminal() {
 struct App {
     _config: Config,
     should_quit: bool,
+    view: View,
     usage_records: Vec<UsageRecord>,
     latest_usage_stored_at: Option<chrono::DateTime<chrono::Utc>>,
     table_state: TableState,
@@ -73,6 +72,7 @@ impl App {
         Self {
             _config,
             should_quit: false,
+            view: View::UsageListing,
             usage_records: Vec::new(),
             latest_usage_stored_at: None,
             table_state: TableState::default(),
@@ -95,54 +95,14 @@ impl App {
         Ok(())
     }
 
-    fn process_poll_messages(&mut self) {
-        while let Ok(msg) = self.poll_rx.try_recv() {
-            match msg {
-                PollMessage::Loading => {
-                    self.is_loading = true;
-                }
-                PollMessage::Page(page) => {
-                    self.is_loading = false;
-                    self.error = None;
-                    let new_records: Vec<_> = page
-                        .records
-                        .into_iter()
-                        .filter(|r| {
-                            !self
-                                .usage_records
-                                .iter()
-                                .any(|existing| existing.transit_id == r.transit_id)
-                        })
-                        .collect();
-                    if !new_records.is_empty() {
-                        self.latest_usage_stored_at = new_records.last().map(|r| r.stored_at);
-                        self.usage_records.extend(new_records);
-                        if self.auto_follow {
-                            self.select_last();
-                        }
-                    }
-                }
-                PollMessage::Error(err) => {
-                    self.is_loading = false;
-                    self.error = Some(err);
-                }
-            }
-        }
-    }
-
-    fn select_last(&mut self) {
-        if self.usage_records.is_empty() {
-            self.table_state.select(None);
-        } else {
-            self.table_state.select(Some(self.usage_records.len() - 1));
-        }
-    }
-
-    fn visible_rows(&self, area_height: u16) -> usize {
-        area_height.saturating_sub(3) as usize // borders + header
-    }
-
     fn render(&mut self, frame: &mut ratatui::Frame) {
+        match self.view {
+            View::UsageListing => self.render_listing(frame),
+            View::UsageDetail(index) => self.render_detail(frame, index),
+        }
+    }
+
+    fn render_listing(&mut self, frame: &mut ratatui::Frame) {
         let [table_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
@@ -216,13 +176,13 @@ impl App {
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().title(" ⚡️ Conduit ").borders(Borders::ALL))
+            .block(Block::default().title(" Usages ").borders(Borders::ALL))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         frame.render_stateful_widget(table, table_area, &mut self.table_state);
 
         let content_len = self.usage_records.len();
-        let viewport = self.visible_rows(table_area.height);
+        let viewport = self.visible_usage_table_rows(table_area.height);
         let scroll_pos = self.table_state.selected().unwrap_or(0);
         let mut scrollbar_state = ScrollbarState::new(content_len.saturating_sub(viewport))
             .position(scroll_pos.saturating_sub(viewport / 2));
@@ -236,8 +196,7 @@ impl App {
         } else {
             let follow = if self.auto_follow { "ON" } else { "OFF" };
             format!(
-                " {} records | auto-follow: {} | q: quit, F: follow, T: {} ",
-                self.usage_records.len(),
+                "auto-follow: {} | q: quit, F: follow, T: {}, Enter/Right/l: view usage ",
                 follow,
                 if self.use_relative_time {
                     "absolute time"
@@ -251,73 +210,206 @@ impl App {
         } else {
             Style::default().fg(Color::DarkGray)
         };
+        frame.render_widget(Paragraph::new(status).style(status_style), status_area);
+    }
+
+    fn visible_usage_table_rows(&self, area_height: u16) -> usize {
+        area_height.saturating_sub(3) as usize // borders + header
+    }
+
+    fn render_detail(&self, frame: &mut ratatui::Frame, index: usize) {
+        let [content_area, status_area] =
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
+
+        let usage_rec = &self.usage_records[index];
+
+        let label_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("Transit ID: ", label_style),
+                Span::raw(usage_rec.transit_id.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Time:       ", label_style),
+                Span::raw(
+                    usage_rec
+                        .stored_at
+                        .format("%Y-%m-%d %H:%M:%S%.6f UTC")
+                        .to_string(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Model:      ", label_style),
+                Span::raw(usage_rec.model.as_deref().unwrap_or("-").to_string()),
+            ]),
+        ];
+
+        let detail = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Usage Details ")
+                .borders(Borders::ALL),
+        );
+        frame.render_widget(detail, content_area);
+
+        let status = " Backspace/Left/h: back ";
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(status).style(status_style),
+            Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
             status_area,
         );
     }
 
     fn handle_events(&mut self) -> anyhow::Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        self.should_quit = true;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.auto_follow = false;
-                        let i = self.table_state.selected().unwrap_or(0);
-                        self.table_state.select(Some(i.saturating_sub(1)));
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let i = self.table_state.selected().unwrap_or(0);
-                        let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                        self.table_state.select(Some(next));
-                        if next == self.usage_records.len().saturating_sub(1) {
-                            self.auto_follow = true;
-                        }
-                    }
-                    KeyCode::Home => {
-                        self.auto_follow = false;
-                        self.table_state.select(Some(0));
-                    }
-                    KeyCode::End => {
-                        self.auto_follow = true;
-                        self.select_last();
-                    }
-                    KeyCode::Char('t') | KeyCode::Char('T') => {
-                        self.use_relative_time = !self.use_relative_time;
-                    }
-                    KeyCode::Char('f') | KeyCode::Char('F') => {
-                        self.auto_follow = !self.auto_follow;
-                        if self.auto_follow {
-                            self.select_last();
-                        }
-                    }
-                    _ => {}
-                },
-                Event::Mouse(mouse) => match mouse.kind {
-                    event::MouseEventKind::ScrollUp => {
-                        self.auto_follow = false;
-                        let i = self.table_state.selected().unwrap_or(0);
-                        self.table_state.select(Some(i.saturating_sub(1)));
-                    }
-                    event::MouseEventKind::ScrollDown => {
-                        let i = self.table_state.selected().unwrap_or(0);
-                        let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                        self.table_state.select(Some(next));
-                        if next == self.usage_records.len().saturating_sub(1) {
-                            self.auto_follow = true;
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
+            match self.view {
+                View::UsageListing => self.handle_listing_events()?,
+                View::UsageDetail(_) => self.handle_detail_events()?,
             }
         }
         Ok(())
     }
+
+    fn handle_listing_events(&mut self) -> anyhow::Result<()> {
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                    self.open_selected_detail();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.auto_follow = false;
+                    let i = self.table_state.selected().unwrap_or(0);
+                    self.table_state.select(Some(i.saturating_sub(1)));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = self.table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
+                    self.table_state.select(Some(next));
+                    if next == self.usage_records.len().saturating_sub(1) {
+                        self.auto_follow = true;
+                    }
+                }
+                KeyCode::Home => {
+                    self.auto_follow = false;
+                    self.table_state.select(Some(0));
+                }
+                KeyCode::End => {
+                    self.auto_follow = true;
+                    self.select_last();
+                }
+                KeyCode::Char('t') | KeyCode::Char('T') => {
+                    self.use_relative_time = !self.use_relative_time;
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.auto_follow = !self.auto_follow;
+                    if self.auto_follow {
+                        self.select_last();
+                    }
+                }
+                _ => {}
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                event::MouseEventKind::ScrollUp => {
+                    self.auto_follow = false;
+                    let i = self.table_state.selected().unwrap_or(0);
+                    self.table_state.select(Some(i.saturating_sub(1)));
+                }
+                event::MouseEventKind::ScrollDown => {
+                    let i = self.table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
+                    self.table_state.select(Some(next));
+                    if next == self.usage_records.len().saturating_sub(1) {
+                        self.auto_follow = true;
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn open_selected_detail(&mut self) {
+        if let Some(index) = self.table_state.selected()
+            && index < self.usage_records.len()
+        {
+            self.view = View::UsageDetail(index);
+        }
+    }
+
+    fn handle_detail_events(&mut self) -> anyhow::Result<()> {
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+                    self.view = View::UsageListing;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn process_poll_messages(&mut self) {
+        while let Ok(msg) = self.poll_rx.try_recv() {
+            match msg {
+                PollMessage::Loading => {
+                    self.is_loading = true;
+                }
+                PollMessage::Page(page) => {
+                    self.is_loading = false;
+                    self.error = None;
+                    let new_records: Vec<_> = page
+                        .records
+                        .into_iter()
+                        .filter(|r| {
+                            !self
+                                .usage_records
+                                .iter()
+                                .any(|existing| existing.transit_id == r.transit_id)
+                        })
+                        .collect();
+                    if !new_records.is_empty() {
+                        self.latest_usage_stored_at = new_records.last().map(|r| r.stored_at);
+                        self.usage_records.extend(new_records);
+                        if self.auto_follow {
+                            self.select_last();
+                        }
+                    }
+                }
+                PollMessage::Error(err) => {
+                    self.is_loading = false;
+                    self.error = Some(err);
+                }
+            }
+        }
+    }
+
+    fn select_last(&mut self) {
+        if self.usage_records.is_empty() {
+            self.table_state.select(None);
+        } else {
+            self.table_state.select(Some(self.usage_records.len() - 1));
+        }
+    }
+}
+
+const PAGE_SIZE: u32 = 50;
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+enum PollMessage {
+    Loading,
+    Page(UsagePage),
+    Error(String),
 }
 
 async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {

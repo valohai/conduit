@@ -1,5 +1,6 @@
 mod json_highlight;
 
+use std::collections::HashSet;
 use std::io;
 use std::num::NonZeroU32;
 use std::sync::mpsc;
@@ -17,6 +18,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
     TableState,
 };
+use uuid::Uuid;
 
 enum View {
     TransitListing,
@@ -480,6 +482,18 @@ impl App {
                         }
                     }
                 }
+                PollMessage::Backfill(updated_records) => {
+                    for updated in updated_records {
+                        if let Some(existing) = self
+                            .transit_records
+                            .iter_mut()
+                            .find(|r| r.transit_id == updated.transit_id)
+                        {
+                            existing.model = updated.model;
+                            existing.usage = updated.usage;
+                        }
+                    }
+                }
                 PollMessage::Error(err) => {
                     self.is_loading = false;
                     self.error = Some(err);
@@ -504,11 +518,13 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 enum PollMessage {
     Loading,
     Page(TransitPage),
+    Backfill(Vec<TransitRecord>),
     Error(String),
 }
 
 async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
     let limit = NonZeroU32::new(PAGE_SIZE).unwrap();
+    let mut incomplete_ids: HashSet<Uuid> = HashSet::new();
 
     let _ = tx.send(PollMessage::Loading);
     let initial = storages
@@ -523,6 +539,7 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
     let mut cursor = match initial {
         Ok(page) => {
             let stored_at = page.records.last().map(|r| r.stored_at);
+            track_incomplete(&mut incomplete_ids, &page.records);
             let _ = tx.send(PollMessage::Page(page));
             stored_at
         }
@@ -536,6 +553,21 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         tokio::time::sleep(POLL_INTERVAL).await;
 
         let _ = tx.send(PollMessage::Loading);
+
+        if !incomplete_ids.is_empty() {
+            let ids: Vec<Uuid> = incomplete_ids.iter().copied().collect();
+            if let Ok(records) = storages.transit.get_transits(ids).await {
+                let filled: Vec<TransitRecord> =
+                    records.into_iter().filter(|r| r.usage.is_some()).collect();
+                for r in &filled {
+                    incomplete_ids.remove(&r.transit_id);
+                }
+                if !filled.is_empty() {
+                    let _ = tx.send(PollMessage::Backfill(filled));
+                }
+            }
+        }
+
         let result = storages
             .transit
             .list_transits(TransitQuery {
@@ -550,11 +582,23 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
                 if let Some(last) = page.records.last() {
                     cursor = Some(last.stored_at);
                 }
+                track_incomplete(&mut incomplete_ids, &page.records);
                 let _ = tx.send(PollMessage::Page(page));
             }
             Err(e) => {
                 let _ = tx.send(PollMessage::Error(e.to_string()));
             }
+        }
+    }
+}
+
+fn track_incomplete(incomplete_ids: &mut HashSet<Uuid>, records: &[TransitRecord]) {
+    for record in records {
+        // TODO: here we could also read from conduit config if usage is even meant to be recorded
+        if record.usage.is_none() {
+            incomplete_ids.insert(record.transit_id);
+        } else {
+            incomplete_ids.remove(&record.transit_id);
         }
     }
 }

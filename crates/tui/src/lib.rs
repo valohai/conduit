@@ -1,4 +1,5 @@
 mod json_highlight;
+pub mod logging;
 
 use std::collections::HashSet;
 use std::io;
@@ -10,6 +11,7 @@ use conduit_core::{Config, Direction, Storages, TransitPage, TransitQuery, Trans
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use logging::LogBuffer;
 use ratatui::Terminal;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -25,7 +27,7 @@ enum View {
     TransitDetail(usize),
 }
 
-pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
+pub fn start(config: Config, storages: Storages, log_buffer: LogBuffer) -> anyhow::Result<()> {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |phi| {
         restore_terminal();
@@ -37,7 +39,7 @@ pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
     io::stdout().execute(crossterm::event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App::new(config, storages);
+    let mut app = App::new(config, storages, log_buffer);
     let result = app.run(&mut terminal);
     restore_terminal();
 
@@ -61,14 +63,16 @@ struct App {
     auto_follow: bool,
     use_relative_time: bool,
     transit_detail_scroll: u16,
+    log_buffer: LogBuffer,
+    log_area: ratatui::layout::Rect,
+    mouse_position: (u16, u16),
     is_loading: bool,
     poll_rx: mpsc::Receiver<PollMessage>,
     poll_abort: tokio::task::AbortHandle,
-    error: Option<String>,
 }
 
 impl App {
-    fn new(_config: Config, storages: Storages) -> Self {
+    fn new(_config: Config, storages: Storages, log_buffer: LogBuffer) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let handle = tokio::runtime::Handle::current();
@@ -84,10 +88,12 @@ impl App {
             auto_follow: true,
             use_relative_time: true,
             transit_detail_scroll: 0,
+            log_buffer,
+            log_area: ratatui::layout::Rect::ZERO,
+            mouse_position: (0, 0),
             is_loading: true,
             poll_rx: rx,
             poll_abort: task.abort_handle(),
-            error: None,
         }
     }
 
@@ -102,15 +108,85 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
+        let log_lines: Vec<String> = self
+            .log_buffer
+            .lock()
+            .map(|buf| buf.iter().cloned().collect())
+            .unwrap_or_default();
+
+        let log_height = if log_lines.is_empty() {
+            0
+        } else {
+            log_lines.len() as u16 + 2 // +2 for the borders
+        };
+
+        let [content_area, log_area] =
+            Layout::vertical([Constraint::Min(5), Constraint::Length(log_height)])
+                .areas(frame.area());
+
         match self.view {
-            View::TransitListing => self.render_transit_listing(frame),
-            View::TransitDetail(index) => self.render_transit_detail(frame, index),
+            View::TransitListing => self.render_transit_listing(frame, content_area),
+            View::TransitDetail(index) => self.render_transit_detail(frame, content_area, index),
         }
+
+        self.log_area = log_area;
+        self.render_log_panel(frame, log_area, log_lines);
     }
 
-    fn render_transit_listing(&mut self, frame: &mut ratatui::Frame) {
+    fn render_log_panel(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        log_lines: Vec<String>,
+    ) {
+        if log_lines.is_empty() {
+            return;
+        }
+
+        let log_text: Vec<Line> = log_lines
+            .into_iter()
+            .map(|line| {
+                let style = if line.contains(" ERROR ") {
+                    Style::default().fg(Color::Red)
+                } else if line.contains(" WARN ") {
+                    Style::default().fg(Color::Yellow)
+                } else if line.contains(" INFO ") {
+                    Style::default().fg(Color::LightBlue)
+                } else if line.contains(" DEBUG ") {
+                    Style::default().fg(Color::Gray)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                Line::styled(line, style)
+            })
+            .collect();
+
+        let visible = area.height.saturating_sub(2) as usize;
+        let skip = log_text.len().saturating_sub(visible);
+
+        let clear_button_style = if self.is_log_close_hover() {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let log_widget = Paragraph::new(log_text.into_iter().skip(skip).collect::<Vec<_>>()).block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::raw(" Logs "),
+                    Span::styled("[ x to clear ]", clear_button_style),
+                    Span::raw(" "),
+                ]))
+                .borders(Borders::ALL),
+        );
+
+        frame.render_widget(log_widget, area);
+    }
+
+    fn render_transit_listing(&mut self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
         let [table_area, status_area] =
-            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(area);
 
         let header = Row::new(vec![
             Cell::from("Time"),
@@ -201,9 +277,7 @@ impl App {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, table_area, &mut scrollbar_state);
 
-        let status = if let Some(ref err) = self.error {
-            format!(" Error: {} ", err)
-        } else if self.is_loading {
+        let status = if self.is_loading {
             " Loading... ".to_string()
         } else {
             let follow = if self.auto_follow { "ON" } else { "OFF" };
@@ -217,11 +291,8 @@ impl App {
                 },
             )
         };
-        let status_style = if self.error.is_some() {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+
+        let status_style = Style::default().fg(Color::DarkGray);
         frame.render_widget(Paragraph::new(status).style(status_style), status_area);
     }
 
@@ -229,9 +300,14 @@ impl App {
         area_height.saturating_sub(3) as usize // borders + header
     }
 
-    fn render_transit_detail(&mut self, frame: &mut ratatui::Frame, index: usize) {
+    fn render_transit_detail(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        index: usize,
+    ) {
         let [content_area, status_area] =
-            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(area);
 
         let record = &self.transit_records[index];
 
@@ -308,16 +384,20 @@ impl App {
 
     fn handle_events(&mut self) -> anyhow::Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
+            let ev = event::read()?;
+            if let Event::Mouse(mouse) = &ev {
+                self.mouse_position = (mouse.column, mouse.row);
+            }
             match self.view {
-                View::TransitListing => self.handle_listing_events()?,
-                View::TransitDetail(_) => self.handle_detail_events()?,
+                View::TransitListing => self.handle_listing_events(ev)?,
+                View::TransitDetail(_) => self.handle_detail_events(ev)?,
             }
         }
         Ok(())
     }
 
-    fn handle_listing_events(&mut self) -> anyhow::Result<()> {
-        match event::read()? {
+    fn handle_listing_events(&mut self, ev: Event) -> anyhow::Result<()> {
+        match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                 KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
@@ -356,6 +436,9 @@ impl App {
                         self.select_last();
                     }
                 }
+                KeyCode::Char('x') => {
+                    self.clear_logs();
+                }
                 _ => {}
             },
             Event::Mouse(mouse) => match mouse.kind {
@@ -372,11 +455,36 @@ impl App {
                         self.auto_follow = true;
                     }
                 }
+                event::MouseEventKind::Down(event::MouseButton::Left) => {
+                    if self.is_log_close_hit(mouse.column, mouse.row) {
+                        self.clear_logs();
+                    }
+                }
                 _ => {}
             },
             _ => {}
         }
         Ok(())
+    }
+
+    fn clear_logs(&mut self) {
+        if let Ok(mut buf) = self.log_buffer.lock() {
+            buf.clear();
+        }
+    }
+
+    fn is_log_close_hit(&self, column: u16, row: u16) -> bool {
+        let area = self.log_area;
+        if area.height == 0 {
+            return false;
+        }
+        // " Logs [ x to clear ] "
+        row == area.y && column >= area.x + 7 && column < area.x + 21
+    }
+
+    fn is_log_close_hover(&self) -> bool {
+        let (col, row) = self.mouse_position;
+        self.is_log_close_hit(col, row)
     }
 
     fn open_selected_detail(&mut self) {
@@ -388,8 +496,8 @@ impl App {
         }
     }
 
-    fn handle_detail_events(&mut self) -> anyhow::Result<()> {
-        match event::read()? {
+    fn handle_detail_events(&mut self, ev: Event) -> anyhow::Result<()> {
+        match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                 KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
@@ -448,6 +556,11 @@ impl App {
                 event::MouseEventKind::ScrollDown => {
                     self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(3);
                 }
+                event::MouseEventKind::Down(event::MouseButton::Left) => {
+                    if self.is_log_close_hit(mouse.column, mouse.row) {
+                        self.clear_logs();
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -463,7 +576,6 @@ impl App {
                 }
                 PollMessage::Page(page) => {
                     self.is_loading = false;
-                    self.error = None;
                     let new_records: Vec<_> = page
                         .records
                         .into_iter()
@@ -496,7 +608,7 @@ impl App {
                 }
                 PollMessage::Error(err) => {
                     self.is_loading = false;
-                    self.error = Some(err);
+                    tracing::error!("{}", err);
                 }
             }
         }

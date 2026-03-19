@@ -1,4 +1,5 @@
 use axum::http::HeaderMap;
+use conduit_core::Provider;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -7,14 +8,16 @@ use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct IdentityInspector {
     transit_id: Uuid,
+    _provider: Provider,
     header_id: Option<String>,
     body_id: Option<String>,
 }
 
 impl IdentityInspector {
-    pub fn new(transit_id: Uuid) -> Self {
+    pub fn new(transit_id: Uuid, provider: Provider) -> Self {
         Self {
             transit_id,
+            _provider: provider,
             header_id: None,
             body_id: None,
         }
@@ -80,7 +83,7 @@ mod tests {
         mut framer: Framer,
         chunks: &[&[u8]],
     ) -> (Option<String>, Option<String>) {
-        let mut inspector = IdentityInspector::new(Uuid::nil());
+        let mut inspector = IdentityInspector::new(Uuid::nil(), Provider::default());
         if let Some(headers) = headers {
             inspector.on_response(headers);
         }

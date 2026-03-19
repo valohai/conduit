@@ -1,3 +1,4 @@
+use conduit_core::Provider;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -8,14 +9,16 @@ use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct UsageInspector {
     transit_id: Uuid,
+    _provider: Provider,
     model: Option<String>,
     usage: Option<Value>,
 }
 
 impl UsageInspector {
-    pub fn new(transit_id: Uuid) -> Self {
+    pub fn new(transit_id: Uuid, provider: Provider) -> Self {
         Self {
             transit_id,
+            _provider: provider,
             model: None,
             usage: None,
         }
@@ -85,7 +88,7 @@ mod tests {
     use serde_json::json;
 
     fn extract_usage(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Value> {
-        let mut inspector = UsageInspector::new(Uuid::nil());
+        let mut inspector = UsageInspector::new(Uuid::nil(), Provider::default());
         for chunk in chunks {
             for frame in framer.process_chunk(chunk) {
                 inspector.on_frame(&frame);
@@ -122,7 +125,7 @@ mod tests {
         let response_bytes = serde_json::to_vec(&response_body).unwrap();
 
         let mut framer = Framer::unary();
-        let mut inspector = UsageInspector::new(Uuid::nil());
+        let mut inspector = UsageInspector::new(Uuid::nil(), Provider::default());
         inspector.on_request(&HeaderMap::new(), Some(&request_body));
         for frame in framer.process_chunk(&response_bytes) {
             inspector.on_frame(&frame);

@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use bytes::Bytes;
-use conduit_core::{Config, ProviderConfig, Storages};
+use conduit_core::{Config, Provider, ProviderConfig, Storages};
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -90,7 +90,7 @@ fn provider_router(
 
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
-    Extension(provider): Extension<Arc<ProviderContext>>,
+    Extension(context): Extension<Arc<ProviderContext>>,
     client_req: Request<Body>,
 ) -> Response {
     let (parts, body) = client_req.into_parts();
@@ -98,8 +98,8 @@ async fn proxy_handler(
     let path = parts.uri.path();
     let query = parts.uri.query();
     let upstream_url = match query {
-        Some(q) => format!("{}{path}?{q}", provider.upstream),
-        None => format!("{}{path}", provider.upstream),
+        Some(q) => format!("{}{path}?{q}", context.upstream),
+        None => format!("{}{path}", context.upstream),
     };
 
     let req_body_bytes = match axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
@@ -118,14 +118,13 @@ async fn proxy_handler(
         upstream_request = upstream_request.header(key, value);
     }
 
-    // TODO: use the upstream URL to figure out the provider...
-
     // the prime identity of _a thing_ that transits through this proxy
     let transit_id = Uuid::now_v7();
+    let provider = Provider::detect(&upstream_url);
 
     let mut inspectors: Vec<Box<dyn Inspector>> = vec![
-        Box::new(IdentityInspector::new(transit_id)),
-        Box::new(UsageInspector::new(transit_id)),
+        Box::new(IdentityInspector::new(transit_id, provider)),
+        Box::new(UsageInspector::new(transit_id, provider)),
     ];
 
     let request_body_as_json: Option<Value> = serde_json::from_slice(&req_body_bytes).ok();
@@ -138,7 +137,7 @@ async fn proxy_handler(
         Ok(res) => res,
         Err(err) => {
             tracing::error!(
-                provider = %provider.name,
+                provider = %context.name,
                 url = %upstream_url,
                 error = %err,
                 "upstream request failed",
@@ -162,7 +161,7 @@ async fn proxy_handler(
         .unwrap_or(false);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(64);
-    let provider_name = provider.name.clone();
+    let provider_config_name = context.name.clone();
     let report_tx = state.report_tx.clone();
     tokio::spawn(async move {
         let mut stream = up_body_stream;
@@ -187,7 +186,7 @@ async fn proxy_handler(
                 }
                 Err(err) => {
                     tracing::error!(
-                        provider = %provider_name,
+                        provider = %provider_config_name,
                         error = %err,
                         "error reading upstream response chunk",
                     );

@@ -1,5 +1,7 @@
+mod identity;
 mod usage;
 
+pub use identity::IdentityInspector;
 pub use usage::UsageInspector;
 
 use std::pin::pin;
@@ -17,6 +19,7 @@ use crate::frame::Frame;
 
 pub trait Inspector: Send {
     fn on_request(&mut self, _headers: &HeaderMap, _body_json: Option<&Value>) {}
+    fn on_response(&mut self, _headers: &HeaderMap) {}
     fn on_frame(&mut self, frame: &Frame);
     fn finish(&mut self) -> Vec<Report>;
 }
@@ -29,7 +32,14 @@ pub struct Report {
 
 #[derive(Debug)]
 pub enum ReportPayload {
-    Usage { model: Option<String>, usage: Value },
+    Identity {
+        header_id: Option<String>,
+        body_id: Option<String>,
+    },
+    Usage {
+        model: Option<String>,
+        usage: Value,
+    },
 }
 
 const BATCH_SIZE: usize = 64;
@@ -48,6 +58,7 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
                 };
 
                 match report.payload {
+                    ReportPayload::Identity { .. } => todo!("store identity reports"),
                     ReportPayload::Usage { model, usage } => {
                         pending_usages.push(UsageDeclaration {
                             transit_id: report.transit_id,

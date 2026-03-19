@@ -52,13 +52,14 @@ impl Inspector for UsageInspector {
 
 fn merge_usage(usage: &mut Option<Value>, payload: &Value) {
     let candidates: &[&Value] = &[
-        // OpenAI Chat Completions unary and SSE
-        // Anthropic Messages unary
-        // Anthropic Messages SSE message_delta event
+        // OpenAI Chat Completions unary body
+        // OpenAI Chat Completions SSE, in the last event if requested
+        // Anthropic Messages unary body
+        // Anthropic Messages SSE message_delta events
         &payload["usage"],
-        // Anthropic Messages SSE message_start event
+        // Anthropic Messages SSE message_start events
         &payload["message"]["usage"],
-        // OpenAI Responses SSE response.completed event
+        // OpenAI Responses SSE response.completed events
         &payload["response"]["usage"],
     ];
     for candidate in candidates {
@@ -98,6 +99,7 @@ mod tests {
             .into_iter()
             .map(|r| match r.payload {
                 ReportPayload::Usage { usage, .. } => usage,
+                _ => panic!("unexpected report payload: {:?}", r.payload),
             })
             .next()
     }
@@ -134,6 +136,7 @@ mod tests {
         let report_payload = reports.into_iter().next().unwrap().payload;
         let model = match report_payload {
             ReportPayload::Usage { model, .. } => model,
+            _ => panic!("unexpected report payload: {:?}", report_payload),
         };
         assert_eq!(model, Some("gpt-5.4".to_string()));
     }

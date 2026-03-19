@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::frame::Framer;
-use crate::inspect::{Inspector, Report, UsageInspector, report_processor};
+use crate::inspect::{IdentityInspector, Inspector, Report, UsageInspector, report_processor};
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -110,19 +110,31 @@ async fn proxy_handler(
         }
     };
 
-    let mut upstream_req = state.http_client.request(parts.method, &upstream_url);
+    let mut upstream_request = state.http_client.request(parts.method, &upstream_url);
     for (key, value) in &parts.headers {
         if STRIPPED_REQUEST_HEADERS.contains(&key.as_str()) {
             continue;
         }
-        upstream_req = upstream_req.header(key, value);
+        upstream_request = upstream_request.header(key, value);
     }
 
-    let body_for_inspectors: Option<Value> = serde_json::from_slice(&req_body_bytes).ok();
-    let headers_for_inspectors = parts.headers.clone();
-    upstream_req = upstream_req.body(req_body_bytes);
+    // TODO: use the upstream URL to figure out the provider...
 
-    let upstream_response = match upstream_req.send().await {
+    // the prime identity of _a thing_ that transits through this proxy
+    let transit_id = Uuid::now_v7();
+
+    let mut inspectors: Vec<Box<dyn Inspector>> = vec![
+        Box::new(IdentityInspector::new(transit_id)),
+        Box::new(UsageInspector::new(transit_id)),
+    ];
+
+    let request_body_as_json: Option<Value> = serde_json::from_slice(&req_body_bytes).ok();
+    for inspector in &mut inspectors {
+        inspector.on_request(&parts.headers, request_body_as_json.as_ref());
+    }
+
+    upstream_request = upstream_request.body(req_body_bytes);
+    let upstream_response = match upstream_request.send().await {
         Ok(res) => res,
         Err(err) => {
             tracing::error!(
@@ -139,7 +151,9 @@ async fn proxy_handler(
     let up_res_headers = upstream_response.headers().clone();
     let up_body_stream = upstream_response.bytes_stream();
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(64);
+    for inspector in &mut inspectors {
+        inspector.on_response(&up_res_headers);
+    }
 
     let is_streaming = up_res_headers
         .get("content-type")
@@ -147,11 +161,7 @@ async fn proxy_handler(
         .map(|ct| ct.starts_with("text/event-stream"))
         .unwrap_or(false);
 
-    // TODO: use the upstream URL to figure out the provider...
-
-    // identity of _a thing_ that transits through this proxy
-    let transit_id = Uuid::now_v7();
-
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(64);
     let provider_name = provider.name.clone();
     let report_tx = state.report_tx.clone();
     tokio::spawn(async move {
@@ -162,13 +172,6 @@ async fn proxy_handler(
         } else {
             Framer::unary()
         };
-
-        let mut inspectors: Vec<Box<dyn Inspector>> =
-            vec![Box::new(UsageInspector::new(transit_id))];
-
-        for inspector in &mut inspectors {
-            inspector.on_request(&headers_for_inspectors, body_for_inspectors.as_ref());
-        }
 
         while let Some(chunk) = stream.next().await {
             match chunk {

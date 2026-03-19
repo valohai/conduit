@@ -8,7 +8,7 @@ use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct IdentityInspector {
     transit_id: Uuid,
-    _provider: Provider,
+    provider: Provider,
     header_id: Option<String>,
     body_id: Option<String>,
 }
@@ -17,7 +17,7 @@ impl IdentityInspector {
     pub fn new(transit_id: Uuid, provider: Provider) -> Self {
         Self {
             transit_id,
-            _provider: provider,
+            provider,
             header_id: None,
             body_id: None,
         }
@@ -68,7 +68,11 @@ impl Inspector for IdentityInspector {
         }
         vec![Report {
             transit_id: self.transit_id,
-            payload: ReportPayload::Identity { header_id, body_id },
+            payload: ReportPayload::Identity {
+                provider: self.provider,
+                header_id,
+                body_id,
+            },
         }]
     }
 }
@@ -98,7 +102,10 @@ mod tests {
         let reports = inspector.finish();
         match reports.first() {
             Some(Report {
-                payload: ReportPayload::Identity { header_id, body_id },
+                payload:
+                    ReportPayload::Identity {
+                        header_id, body_id, ..
+                    },
                 ..
             }) => (header_id.clone(), body_id.clone()),
             _ => (None, None),

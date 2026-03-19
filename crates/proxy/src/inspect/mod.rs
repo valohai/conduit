@@ -7,7 +7,7 @@ pub use usage::UsageInspector;
 use std::pin::pin;
 use std::time::Duration;
 
-use conduit_core::{IdentityDeclaration, Storages, UsageDeclaration};
+use conduit_core::{IdentityDeclaration, Provider, Storages, UsageDeclaration};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
@@ -33,6 +33,7 @@ pub struct Report {
 #[derive(Debug)]
 pub enum ReportPayload {
     Identity {
+        provider: Provider,
         header_id: Option<String>,
         body_id: Option<String>,
     },
@@ -63,9 +64,10 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
                 };
 
                 match report.payload {
-                    ReportPayload::Identity { header_id, body_id } => {
+                    ReportPayload::Identity { provider, header_id, body_id } => {
                         pending_identities.push(IdentityDeclaration {
                             transit_id: report.transit_id,
+                            provider,
                             header_id,
                             body_id,
                         });

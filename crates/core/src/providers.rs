@@ -25,8 +25,8 @@ impl Provider {
 impl fmt::Display for Provider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::OpenAI => "openai",
-            Self::Anthropic => "anthropic",
+            Self::OpenAI => "OpenAI",
+            Self::Anthropic => "Anthropic",
             Self::Unknown => "unknown",
         };
         f.write_str(s)

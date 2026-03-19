@@ -6,6 +6,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::Provider;
+
 pub struct Storages {
     pub transit: Arc<dyn TransitStorage>,
 }
@@ -29,6 +31,7 @@ pub trait TransitStorage: Send + Sync {
 
 pub struct IdentityDeclaration {
     pub transit_id: Uuid,
+    pub provider: Provider,
     pub header_id: Option<String>,
     pub body_id: Option<String>,
 }
@@ -42,6 +45,7 @@ pub struct UsageDeclaration {
 pub struct TransitRecord {
     pub transit_id: Uuid,
     pub stored_at: chrono::DateTime<chrono::Utc>,
+    pub provider: Provider,
     pub header_id: Option<String>, // LLM provider's identifier from the response header i.e. "debugging id"
     pub body_id: Option<String>, // LLM provider's identifier from the response body i.e. "correlation id"
     pub model: Option<String>,

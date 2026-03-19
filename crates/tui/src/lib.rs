@@ -112,6 +112,7 @@ impl App {
 
         let header = Row::new(vec![
             Cell::from("Time"),
+            Cell::from("Provider"),
             Cell::from("Model"),
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
@@ -158,6 +159,7 @@ impl App {
 
                 Row::new(vec![
                     Cell::from(time_ago),
+                    Cell::from(record.provider.to_string()),
                     Cell::from(model_str),
                     Cell::from(input_tokens),
                     Cell::from(output_tokens),
@@ -177,6 +179,7 @@ impl App {
 
         let widths = [
             Constraint::Length(19),
+            Constraint::Length(12),
             Constraint::Length(20),
             Constraint::Length(12),
             Constraint::Length(13),
@@ -238,6 +241,10 @@ impl App {
             Line::from(vec![
                 Span::styled("Transit ID: ", label_style),
                 Span::raw(record.transit_id.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Provider:   ", label_style),
+                Span::raw(record.provider.to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Time:       ", label_style),

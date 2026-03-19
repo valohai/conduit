@@ -2,8 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use conduit_core::{
-    Direction, IdentityDeclaration, TransitPage, TransitQuery, TransitRecord, TransitStorage,
-    UsageDeclaration,
+    Direction, IdentityDeclaration, Provider, TransitPage, TransitQuery, TransitRecord,
+    TransitStorage, UsageDeclaration,
 };
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -30,6 +30,7 @@ impl SqliteTransitStorage {
             "CREATE TABLE IF NOT EXISTS identity (
                 transit_id TEXT PRIMARY KEY NOT NULL,
                 stored_at TEXT NOT NULL,
+                provider TEXT NOT NULL,
                 header_id TEXT,
                 body_id TEXT
             )",
@@ -71,11 +72,13 @@ impl TransitStorage for SqliteTransitStorage {
                 let now = chrono::Utc::now();
                 let stored_at = format_timestamp(&now);
                 let transit_id = declaration.transit_id.to_string();
+                let provider = declaration.provider.to_string();
                 sqlx::query(
-                    "INSERT INTO identity (transit_id, stored_at, header_id, body_id) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO identity (transit_id, stored_at, provider, header_id, body_id) VALUES (?, ?, ?, ?, ?)",
                 )
                 .bind(&transit_id)
                 .bind(&stored_at)
+                .bind(&provider)
                 .bind(&declaration.header_id)
                 .bind(&declaration.body_id)
                 .execute(&mut *tx)
@@ -122,7 +125,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (Some(cursor), Direction::Newer) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                        "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
@@ -138,7 +141,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (Some(cursor), Direction::Older) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                        "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
@@ -153,7 +156,7 @@ impl TransitStorage for SqliteTransitStorage {
                 }
                 (None, Direction::Newer) => {
                     sqlx::query(
-                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                        "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
@@ -166,7 +169,7 @@ impl TransitStorage for SqliteTransitStorage {
                 }
                 (None, Direction::Older) => {
                     sqlx::query(
-                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                        "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
@@ -186,13 +189,16 @@ impl TransitStorage for SqliteTransitStorage {
                 .map(|row| {
                     let transit_id: String = row.get("transit_id");
                     let stored_at: String = row.get("stored_at");
+                    let provider_str: String = row.get("provider");
                     let header_id: Option<String> = row.get("header_id");
                     let body_id: Option<String> = row.get("body_id");
                     let model: Option<String> = row.get("model");
                     let usage_json: Option<String> = row.get("usage_json");
+                    let Ok(provider) = provider_str.parse::<Provider>();
                     TransitRecord {
                         transit_id: transit_id.parse().unwrap(),
                         stored_at: parse_timestamp(&stored_at),
+                        provider,
                         header_id,
                         body_id,
                         model,
@@ -235,6 +241,7 @@ mod tests {
         let identity_declarations: Vec<_> = (0..count)
             .map(|_| IdentityDeclaration {
                 transit_id: Uuid::now_v7(),
+                provider: Provider::OpenAI,
                 header_id: Some("req-123".into()),
                 body_id: Some("chatcmpl-test".into()),
             })
@@ -389,6 +396,7 @@ mod tests {
         storage
             .store_identities(vec![IdentityDeclaration {
                 transit_id,
+                provider: Provider::default(),
                 header_id: Some("req-abc".into()),
                 body_id: None,
             }])
@@ -421,6 +429,7 @@ mod tests {
         storage
             .store_identities(vec![IdentityDeclaration {
                 transit_id: late_id,
+                provider: Provider::default(),
                 header_id: None,
                 body_id: Some("late".into()),
             }])
@@ -441,6 +450,7 @@ mod tests {
         storage
             .store_identities(vec![IdentityDeclaration {
                 transit_id: early_id,
+                provider: Provider::default(),
                 header_id: None,
                 body_id: Some("early".into()),
             }])

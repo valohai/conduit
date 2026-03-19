@@ -49,9 +49,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!(?config, "config loaded");
 
     // TODO: make database path configurable; defaulting to "conduit.db"
-    let usage_storage = conduit_storage::SqliteUsageStorage::new("sqlite:conduit.db").await?;
+    let transit_storage = conduit_storage::SqliteTransitStorage::new("sqlite:conduit.db").await?;
     let storages = conduit_core::Storages {
-        usage: Arc::new(usage_storage),
+        transit: Arc::new(transit_storage),
     };
 
     let cmd = cli.command.unwrap_or(Commands::Proxy);

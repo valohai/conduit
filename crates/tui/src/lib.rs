@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 
 use chrono_humanize::HumanTime;
-use conduit_core::{Config, Direction, Storages, UsagePage, UsageQuery, UsageRecord};
+use conduit_core::{Config, Direction, Storages, TransitPage, TransitQuery, TransitRecord};
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -19,8 +19,8 @@ use ratatui::widgets::{
 };
 
 enum View {
-    UsageListing,
-    UsageDetail(usize),
+    TransitListing,
+    TransitDetail(usize),
 }
 
 pub fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
@@ -53,12 +53,12 @@ struct App {
     _config: Config,
     should_quit: bool,
     view: View,
-    usage_records: Vec<UsageRecord>,
-    latest_usage_stored_at: Option<chrono::DateTime<chrono::Utc>>,
-    usage_table_state: TableState,
+    transit_records: Vec<TransitRecord>,
+    latest_transit_stored_at: Option<chrono::DateTime<chrono::Utc>>,
+    transit_table_state: TableState,
     auto_follow: bool,
     use_relative_time: bool,
-    usage_detail_scroll: u16,
+    transit_detail_scroll: u16,
     is_loading: bool,
     poll_rx: mpsc::Receiver<PollMessage>,
     poll_abort: tokio::task::AbortHandle,
@@ -75,13 +75,13 @@ impl App {
         Self {
             _config,
             should_quit: false,
-            view: View::UsageListing,
-            usage_records: Vec::new(),
-            latest_usage_stored_at: None,
-            usage_table_state: TableState::default(),
+            view: View::TransitListing,
+            transit_records: Vec::new(),
+            latest_transit_stored_at: None,
+            transit_table_state: TableState::default(),
             auto_follow: true,
             use_relative_time: true,
-            usage_detail_scroll: 0,
+            transit_detail_scroll: 0,
             is_loading: true,
             poll_rx: rx,
             poll_abort: task.abort_handle(),
@@ -101,12 +101,12 @@ impl App {
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
         match self.view {
-            View::UsageListing => self.render_usage_listing(frame),
-            View::UsageDetail(index) => self.render_usage_detail(frame, index),
+            View::TransitListing => self.render_transit_listing(frame),
+            View::TransitDetail(index) => self.render_transit_detail(frame, index),
         }
     }
 
-    fn render_usage_listing(&mut self, frame: &mut ratatui::Frame) {
+    fn render_transit_listing(&mut self, frame: &mut ratatui::Frame) {
         let [table_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
@@ -123,7 +123,7 @@ impl App {
         );
 
         let mut rows: Vec<Row> = self
-            .usage_records
+            .transit_records
             .iter()
             .map(|record| {
                 let time_ago = if self.use_relative_time {
@@ -139,16 +139,19 @@ impl App {
 
                 let input_tokens = record
                     .usage
-                    .get("prompt_tokens")
-                    .or_else(|| record.usage.get("input_tokens"))
+                    .as_ref()
+                    .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
                     .and_then(|v| v.as_u64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
 
                 let output_tokens = record
                     .usage
-                    .get("completion_tokens")
-                    .or_else(|| record.usage.get("output_tokens"))
+                    .as_ref()
+                    .and_then(|u| {
+                        u.get("completion_tokens")
+                            .or_else(|| u.get("output_tokens"))
+                    })
                     .and_then(|v| v.as_u64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
@@ -180,14 +183,14 @@ impl App {
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().title(" Usages ").borders(Borders::ALL))
+            .block(Block::default().title(" Requests ").borders(Borders::ALL))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        frame.render_stateful_widget(table, table_area, &mut self.usage_table_state);
+        frame.render_stateful_widget(table, table_area, &mut self.transit_table_state);
 
-        let content_len = self.usage_records.len();
-        let viewport = self.visible_usage_table_rows(table_area.height);
-        let scroll_pos = self.usage_table_state.selected().unwrap_or(0);
+        let content_len = self.transit_records.len();
+        let viewport = self.visible_table_rows(table_area.height);
+        let scroll_pos = self.transit_table_state.selected().unwrap_or(0);
         let mut scrollbar_state = ScrollbarState::new(content_len.saturating_sub(viewport))
             .position(scroll_pos.saturating_sub(viewport / 2));
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
@@ -200,7 +203,7 @@ impl App {
         } else {
             let follow = if self.auto_follow { "ON" } else { "OFF" };
             format!(
-                "auto-follow: {} | q: quit, F: follow, T: {}, Enter/Right/l: view usage ",
+                "auto-follow: {} | q: quit, F: follow, T: {}, Enter/Right/l: details ",
                 follow,
                 if self.use_relative_time {
                     "absolute time"
@@ -217,15 +220,15 @@ impl App {
         frame.render_widget(Paragraph::new(status).style(status_style), status_area);
     }
 
-    fn visible_usage_table_rows(&self, area_height: u16) -> usize {
+    fn visible_table_rows(&self, area_height: u16) -> usize {
         area_height.saturating_sub(3) as usize // borders + header
     }
 
-    fn render_usage_detail(&mut self, frame: &mut ratatui::Frame, index: usize) {
+    fn render_transit_detail(&mut self, frame: &mut ratatui::Frame, index: usize) {
         let [content_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(frame.area());
 
-        let usage_rec = &self.usage_records[index];
+        let record = &self.transit_records[index];
 
         let label_style = Style::default()
             .fg(Color::Cyan)
@@ -234,46 +237,56 @@ impl App {
         let mut lines = vec![
             Line::from(vec![
                 Span::styled("Transit ID: ", label_style),
-                Span::raw(usage_rec.transit_id.to_string()),
+                Span::raw(record.transit_id.to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Time:       ", label_style),
                 Span::raw(
-                    usage_rec
+                    record
                         .stored_at
                         .format("%Y-%m-%d %H:%M:%S%.6f UTC")
                         .to_string(),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Model:      ", label_style),
-                Span::raw(usage_rec.model.as_deref().unwrap_or("-").to_string()),
+                Span::styled("Header ID:  ", label_style),
+                Span::raw(record.header_id.as_deref().unwrap_or("-").to_string()),
             ]),
-            Line::raw(""),
-            Line::from(Span::styled("Full Usage:", label_style)),
+            Line::from(vec![
+                Span::styled("Body ID:    ", label_style),
+                Span::raw(record.body_id.as_deref().unwrap_or("-").to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Model:      ", label_style),
+                Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
+            ]),
         ];
 
-        lines.extend(json_highlight::json_to_lines(&usage_rec.usage));
+        if let Some(ref usage) = record.usage {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled("Full Usage:", label_style)));
+            lines.extend(json_highlight::json_to_lines(usage));
+        }
 
         let content_len = lines.len();
         let viewport = content_area.height.saturating_sub(2) as usize;
         let max_scroll = content_len.saturating_sub(viewport) as u16;
-        self.usage_detail_scroll = self.usage_detail_scroll.min(max_scroll);
+        self.transit_detail_scroll = self.transit_detail_scroll.min(max_scroll);
         let detail = Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" Usage Details ")
+                    .title(" Transit Details ")
                     .borders(Borders::ALL),
             )
-            .scroll((self.usage_detail_scroll, 0));
+            .scroll((self.transit_detail_scroll, 0));
         frame.render_widget(detail, content_area);
 
         let mut scrollbar_state = ScrollbarState::new(content_len.saturating_sub(viewport))
-            .position(self.usage_detail_scroll as usize);
+            .position(self.transit_detail_scroll as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, content_area, &mut scrollbar_state);
 
-        let position = format!(" {}/{} ", index + 1, self.usage_records.len());
+        let position = format!(" {}/{} ", index + 1, self.transit_records.len());
         let status = format!(
             "{}| Backspace/Left/h: back, Up/Down: scroll, [/]: prev/next record ",
             position,
@@ -287,8 +300,8 @@ impl App {
     fn handle_events(&mut self) -> anyhow::Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
             match self.view {
-                View::UsageListing => self.handle_listing_events()?,
-                View::UsageDetail(_) => self.handle_detail_events()?,
+                View::TransitListing => self.handle_listing_events()?,
+                View::TransitDetail(_) => self.handle_detail_events()?,
             }
         }
         Ok(())
@@ -306,20 +319,20 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.auto_follow = false;
-                    let i = self.usage_table_state.selected().unwrap_or(0);
-                    self.usage_table_state.select(Some(i.saturating_sub(1)));
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    self.transit_table_state.select(Some(i.saturating_sub(1)));
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let i = self.usage_table_state.selected().unwrap_or(0);
-                    let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                    self.usage_table_state.select(Some(next));
-                    if next == self.usage_records.len().saturating_sub(1) {
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                    if next == self.transit_records.len().saturating_sub(1) {
                         self.auto_follow = true;
                     }
                 }
                 KeyCode::Home => {
                     self.auto_follow = false;
-                    self.usage_table_state.select(Some(0));
+                    self.transit_table_state.select(Some(0));
                 }
                 KeyCode::End => {
                     self.auto_follow = true;
@@ -339,14 +352,14 @@ impl App {
             Event::Mouse(mouse) => match mouse.kind {
                 event::MouseEventKind::ScrollUp => {
                     self.auto_follow = false;
-                    let i = self.usage_table_state.selected().unwrap_or(0);
-                    self.usage_table_state.select(Some(i.saturating_sub(1)));
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    self.transit_table_state.select(Some(i.saturating_sub(1)));
                 }
                 event::MouseEventKind::ScrollDown => {
-                    let i = self.usage_table_state.selected().unwrap_or(0);
-                    let next = (i + 1).min(self.usage_records.len().saturating_sub(1));
-                    self.usage_table_state.select(Some(next));
-                    if next == self.usage_records.len().saturating_sub(1) {
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                    if next == self.transit_records.len().saturating_sub(1) {
                         self.auto_follow = true;
                     }
                 }
@@ -358,11 +371,11 @@ impl App {
     }
 
     fn open_selected_detail(&mut self) {
-        if let Some(index) = self.usage_table_state.selected()
-            && index < self.usage_records.len()
+        if let Some(index) = self.transit_table_state.selected()
+            && index < self.transit_records.len()
         {
-            self.usage_detail_scroll = 0;
-            self.view = View::UsageDetail(index);
+            self.transit_detail_scroll = 0;
+            self.view = View::TransitDetail(index);
         }
     }
 
@@ -374,46 +387,46 @@ impl App {
                     self.should_quit = true;
                 }
                 KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
-                    self.view = View::UsageListing;
+                    self.view = View::TransitListing;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_sub(1);
+                    self.transit_detail_scroll = self.transit_detail_scroll.saturating_sub(1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_add(1);
+                    self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(1);
                 }
                 KeyCode::PageUp => {
-                    self.usage_detail_scroll =
-                        self.usage_detail_scroll.saturating_sub(PAGE_SIZE as u16);
+                    self.transit_detail_scroll =
+                        self.transit_detail_scroll.saturating_sub(PAGE_SIZE as u16);
                 }
                 KeyCode::PageDown => {
-                    self.usage_detail_scroll =
-                        self.usage_detail_scroll.saturating_add(PAGE_SIZE as u16);
+                    self.transit_detail_scroll =
+                        self.transit_detail_scroll.saturating_add(PAGE_SIZE as u16);
                 }
                 KeyCode::Home => {
-                    self.usage_detail_scroll = 0;
+                    self.transit_detail_scroll = 0;
                 }
                 KeyCode::End => {
-                    self.usage_detail_scroll = u16::MAX;
+                    self.transit_detail_scroll = u16::MAX;
                 }
                 KeyCode::Char('[') => {
-                    if let View::UsageDetail(index) = self.view
+                    if let View::TransitDetail(index) = self.view
                         && index > 0
                     {
                         let new_index = index - 1;
-                        self.usage_detail_scroll = 0;
-                        self.view = View::UsageDetail(new_index);
-                        self.usage_table_state.select(Some(new_index));
+                        self.transit_detail_scroll = 0;
+                        self.view = View::TransitDetail(new_index);
+                        self.transit_table_state.select(Some(new_index));
                     }
                 }
                 KeyCode::Char(']') => {
-                    if let View::UsageDetail(index) = self.view {
-                        let max = self.usage_records.len().saturating_sub(1);
+                    if let View::TransitDetail(index) = self.view {
+                        let max = self.transit_records.len().saturating_sub(1);
                         if index < max {
                             let new_index = index + 1;
-                            self.usage_detail_scroll = 0;
-                            self.view = View::UsageDetail(new_index);
-                            self.usage_table_state.select(Some(new_index));
+                            self.transit_detail_scroll = 0;
+                            self.view = View::TransitDetail(new_index);
+                            self.transit_table_state.select(Some(new_index));
                         }
                     }
                 }
@@ -421,10 +434,10 @@ impl App {
             },
             Event::Mouse(mouse) => match mouse.kind {
                 event::MouseEventKind::ScrollUp => {
-                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_sub(3);
+                    self.transit_detail_scroll = self.transit_detail_scroll.saturating_sub(3);
                 }
                 event::MouseEventKind::ScrollDown => {
-                    self.usage_detail_scroll = self.usage_detail_scroll.saturating_add(3);
+                    self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(3);
                 }
                 _ => {}
             },
@@ -447,14 +460,14 @@ impl App {
                         .into_iter()
                         .filter(|r| {
                             !self
-                                .usage_records
+                                .transit_records
                                 .iter()
                                 .any(|existing| existing.transit_id == r.transit_id)
                         })
                         .collect();
                     if !new_records.is_empty() {
-                        self.latest_usage_stored_at = new_records.last().map(|r| r.stored_at);
-                        self.usage_records.extend(new_records);
+                        self.latest_transit_stored_at = new_records.last().map(|r| r.stored_at);
+                        self.transit_records.extend(new_records);
                         if self.auto_follow {
                             self.select_last();
                         }
@@ -469,11 +482,11 @@ impl App {
     }
 
     fn select_last(&mut self) {
-        if self.usage_records.is_empty() {
-            self.usage_table_state.select(None);
+        if self.transit_records.is_empty() {
+            self.transit_table_state.select(None);
         } else {
-            self.usage_table_state
-                .select(Some(self.usage_records.len() - 1));
+            self.transit_table_state
+                .select(Some(self.transit_records.len() - 1));
         }
     }
 }
@@ -483,7 +496,7 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum PollMessage {
     Loading,
-    Page(UsagePage),
+    Page(TransitPage),
     Error(String),
 }
 
@@ -492,8 +505,8 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
 
     let _ = tx.send(PollMessage::Loading);
     let initial = storages
-        .usage
-        .list_usages(UsageQuery {
+        .transit
+        .list_transits(TransitQuery {
             cursor: None,
             direction: Direction::Older,
             limit,
@@ -517,8 +530,8 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
 
         let _ = tx.send(PollMessage::Loading);
         let result = storages
-            .usage
-            .list_usages(UsageQuery {
+            .transit
+            .list_transits(TransitQuery {
                 cursor,
                 direction: Direction::Newer,
                 limit,

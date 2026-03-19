@@ -1,3 +1,3 @@
 mod sqlite;
 
-pub use sqlite::SqliteUsageStorage;
+pub use sqlite::SqliteTransitStorage;

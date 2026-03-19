@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::layer::SubscriberExt;
 
 #[derive(Parser)]
 struct Cli {
@@ -32,18 +33,36 @@ async fn main() -> anyhow::Result<()> {
         "the argument '--verbose...' cannot be used with '--quiet...'"
     );
 
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        let level = match (cli.verbose, cli.quiet) {
-            (2.., _) => "trace",
-            (1, _) => "debug",
-            (_, 0) => "info",
-            (_, 1) => "warn",
-            (_, 2) => "error",
-            _ => "off",
-        };
-        tracing_subscriber::EnvFilter::new(level)
-    });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let cmd = cli.command.unwrap_or(Commands::Proxy);
+
+    // with the dashboard, only show "error" level logs by default, but allow
+    // for up to 4 levels of verbosity; RUST_LOG still overrides this
+    let log_level = match (&cmd, cli.verbose, cli.quiet) {
+        (Commands::Dashboard, 4.., _) => "trace",
+        (Commands::Dashboard, 3, _) => "debug",
+        (Commands::Dashboard, 2, _) => "info",
+        (Commands::Dashboard, 1, _) => "warn",
+        (Commands::Dashboard, _, 0) => "error",
+        (_, 2.., _) => "trace",
+        (_, 1, _) => "debug",
+        (_, _, 0) => "info",
+        (_, _, 1) => "warn",
+        (_, _, 2) => "error",
+        _ => "off",
+    };
+
+    let log_filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level))
+    };
+
+    if !matches!(cmd, Commands::Dashboard) {
+        // we'll handle logging for dashboard separately to avoid
+        // messing the terminal UI output
+        tracing_subscriber::fmt()
+            .with_env_filter(log_filter())
+            .init();
+    }
 
     let config = conduit_core::Config::load(cli.config_path)?;
     tracing::debug!(?config, "config loaded");
@@ -54,10 +73,18 @@ async fn main() -> anyhow::Result<()> {
         transit: Arc::new(transit_storage),
     };
 
-    let cmd = cli.command.unwrap_or(Commands::Proxy);
     match cmd {
         Commands::Proxy => conduit_proxy::start(config, storages).await?,
-        Commands::Dashboard => conduit_tui::start(config, storages)?,
+        Commands::Dashboard => {
+            let log_buffer = conduit_tui::logging::new_log_buffer();
+            let layer = conduit_tui::logging::TuiLogLayer::new(log_buffer.clone());
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(log_filter())
+                .with(layer);
+            tracing::subscriber::set_global_default(subscriber)?;
+
+            conduit_tui::start(config, storages, log_buffer)?;
+        }
     }
 
     Ok(())

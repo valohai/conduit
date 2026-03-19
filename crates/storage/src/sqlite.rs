@@ -7,6 +7,7 @@ use conduit_core::{
 };
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use uuid::Uuid;
 
 pub struct SqliteTransitStorage {
     pool: sqlx::SqlitePool,
@@ -186,25 +187,7 @@ impl TransitStorage for SqliteTransitStorage {
             let mut records: Vec<TransitRecord> = rows
                 .iter()
                 .take(limit)
-                .map(|row| {
-                    let transit_id: String = row.get("transit_id");
-                    let stored_at: String = row.get("stored_at");
-                    let provider_str: String = row.get("provider");
-                    let header_id: Option<String> = row.get("header_id");
-                    let body_id: Option<String> = row.get("body_id");
-                    let model: Option<String> = row.get("model");
-                    let usage_json: Option<String> = row.get("usage_json");
-                    let Ok(provider) = provider_str.parse::<Provider>();
-                    TransitRecord {
-                        transit_id: transit_id.parse().unwrap(),
-                        stored_at: parse_timestamp(&stored_at),
-                        provider,
-                        header_id,
-                        body_id,
-                        model,
-                        usage: usage_json.map(|j| serde_json::from_str(&j).unwrap()),
-                    }
-                })
+                .filter_map(row_to_transit_record)
                 .collect();
 
             if matches!(query.direction, Direction::Older) {
@@ -214,15 +197,84 @@ impl TransitStorage for SqliteTransitStorage {
             Ok(TransitPage { records, has_more })
         })
     }
+
+    fn get_transits(
+        &self,
+        transit_ids: Vec<Uuid>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+        Box::pin(async move {
+            if transit_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            let placeholders = transit_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
+                        u.model, u.usage_json
+                 FROM identity i
+                 LEFT JOIN usage u ON i.transit_id = u.transit_id
+                 WHERE i.transit_id IN ({})
+                 ORDER BY i.stored_at ASC",
+                placeholders
+            );
+            let mut query = sqlx::query(&sql);
+            for id in &transit_ids {
+                query = query.bind(id.to_string());
+            }
+            let rows = query.fetch_all(&self.pool).await?;
+            Ok(rows.iter().filter_map(row_to_transit_record).collect())
+        })
+    }
+}
+
+fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord> {
+    let transit_id: String = row.get("transit_id");
+    let stored_at: String = row.get("stored_at");
+    let provider_str: String = row.get("provider");
+    let header_id: Option<String> = row.get("header_id");
+    let body_id: Option<String> = row.get("body_id");
+    let model: Option<String> = row.get("model");
+    let usage_json: Option<String> = row.get("usage_json");
+    let Ok(provider) = provider_str.parse::<Provider>();
+
+    // to keep the proxy process going, be loud about errors but don't panic
+
+    let Ok(transit_id) = transit_id.parse::<Uuid>() else {
+        tracing::warn!(transit_id, "invalid UUID in transit record");
+        return None;
+    };
+    let Ok(stored_at) = stored_at.parse::<chrono::DateTime<chrono::Utc>>() else {
+        tracing::warn!(%transit_id, stored_at, "invalid timestamp in transit record");
+        return None;
+    };
+    let usage = match usage_json {
+        Some(j) => match serde_json::from_str(&j) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(%transit_id, error = %e, "invalid usage JSON in transit record");
+                return None;
+            }
+        },
+        None => None,
+    };
+
+    Some(TransitRecord {
+        transit_id,
+        stored_at,
+        provider,
+        header_id,
+        body_id,
+        model,
+        usage,
+    })
 }
 
 fn format_timestamp(dt: &chrono::DateTime<chrono::Utc>) -> String {
     // with microseconds e.g. 2026-03-16T06:21:03.616874Z
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
-
-fn parse_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
-    s.parse::<chrono::DateTime<chrono::Utc>>().unwrap()
 }
 
 #[cfg(test)]
@@ -467,5 +519,52 @@ mod tests {
             .unwrap();
         assert_eq!(page.records.len(), 1);
         assert_eq!(page.records[0].transit_id, early_id);
+    }
+
+    #[tokio::test]
+    async fn get_transits_can_backfill_usage() {
+        let storage = test_storage().await;
+
+        let transit_id = Uuid::now_v7();
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id,
+                provider: Provider::OpenAI,
+                header_id: Some("req-abc".into()),
+                body_id: None,
+            }])
+            .await
+            .unwrap();
+
+        let records = storage.get_transits(vec![transit_id]).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].transit_id, transit_id);
+        assert!(records[0].usage.is_none());
+        assert!(records[0].model.is_none());
+
+        storage
+            .store_usages(vec![UsageDeclaration {
+                transit_id,
+                model: Some("gpt-4".into()),
+                usage: json!({"input_tokens": 100, "output_tokens": 50}),
+            }])
+            .await
+            .unwrap();
+
+        let records = storage.get_transits(vec![transit_id]).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].transit_id, transit_id);
+        assert_eq!(records[0].model.as_deref(), Some("gpt-4"));
+        assert!(records[0].usage.is_some());
+        let usage = records[0].usage.as_ref().unwrap();
+        assert_eq!(usage["input_tokens"], 100);
+        assert_eq!(usage["output_tokens"], 50);
+    }
+
+    #[tokio::test]
+    async fn get_transits_empty_input() {
+        let storage = test_storage().await;
+        let records = storage.get_transits(vec![]).await.unwrap();
+        assert!(records.is_empty());
     }
 }

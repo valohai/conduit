@@ -27,6 +27,11 @@ pub trait TransitStorage: Send + Sync {
         &self,
         query: TransitQuery,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<TransitPage>> + Send + '_>>;
+
+    fn get_transits(
+        &self,
+        transit_ids: Vec<Uuid>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>>;
 }
 
 pub struct IdentityDeclaration {

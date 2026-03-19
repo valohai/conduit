@@ -3,7 +3,6 @@ pub mod storage;
 
 pub use config::{CONFIG_ENV_VAR, Config, ProviderConfig};
 pub use storage::{
-    Direction, Storages, UsageDeclaration, UsagePage, UsageQuery, UsageRecord, UsageStorage,
+    Direction, IdentityDeclaration, Storages, TransitPage, TransitQuery, TransitRecord,
+    TransitStorage, UsageDeclaration,
 };
-
-pub const GREETING: &str = "Hello, world!";

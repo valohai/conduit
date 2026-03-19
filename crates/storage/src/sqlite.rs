@@ -1,15 +1,18 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use conduit_core::{Direction, UsageDeclaration, UsagePage, UsageQuery, UsageRecord, UsageStorage};
+use conduit_core::{
+    Direction, IdentityDeclaration, TransitPage, TransitQuery, TransitRecord, TransitStorage,
+    UsageDeclaration,
+};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
-pub struct SqliteUsageStorage {
+pub struct SqliteTransitStorage {
     pool: sqlx::SqlitePool,
 }
 
-impl SqliteUsageStorage {
+impl SqliteTransitStorage {
     pub async fn new(database_url: &str) -> anyhow::Result<Self> {
         let options = database_url
             .parse::<SqliteConnectOptions>()?
@@ -24,20 +27,29 @@ impl SqliteUsageStorage {
         // TODO: add some form of migration system?
 
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS usage (
+            "CREATE TABLE IF NOT EXISTS identity (
                 transit_id TEXT PRIMARY KEY NOT NULL,
                 stored_at TEXT NOT NULL,
-                model TEXT,
-                usage_json TEXT NOT NULL
+                header_id TEXT,
+                body_id TEXT
             )",
         )
         .execute(&pool)
         .await?;
 
-        // index stored_at as it is used for pagination cursor
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_usage_stored_at
-             ON usage (stored_at)",
+            "CREATE INDEX IF NOT EXISTS idx_identity_stored_at
+             ON identity (stored_at)",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS usage (
+                transit_id TEXT PRIMARY KEY NOT NULL,
+                model TEXT,
+                usage_json TEXT NOT NULL
+            )",
         )
         .execute(&pool)
         .await?;
@@ -48,10 +60,10 @@ impl SqliteUsageStorage {
     }
 }
 
-impl UsageStorage for SqliteUsageStorage {
-    fn store_usages(
+impl TransitStorage for SqliteTransitStorage {
+    fn store_identities(
         &self,
-        declarations: Vec<UsageDeclaration>,
+        declarations: Vec<IdentityDeclaration>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let mut tx = self.pool.begin().await?;
@@ -59,16 +71,37 @@ impl UsageStorage for SqliteUsageStorage {
                 let now = chrono::Utc::now();
                 let stored_at = format_timestamp(&now);
                 let transit_id = declaration.transit_id.to_string();
-                let usage_json = declaration.usage.to_string();
                 sqlx::query(
-                    "INSERT INTO usage (transit_id, stored_at, model, usage_json) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO identity (transit_id, stored_at, header_id, body_id) VALUES (?, ?, ?, ?)",
                 )
                 .bind(&transit_id)
                 .bind(&stored_at)
-                .bind(&declaration.model)
-                .bind(&usage_json)
+                .bind(&declaration.header_id)
+                .bind(&declaration.body_id)
                 .execute(&mut *tx)
                 .await?;
+            }
+            tx.commit().await?;
+            tracing::debug!(count = declarations.len(), "stored identity records");
+            Ok(())
+        })
+    }
+
+    fn store_usages(
+        &self,
+        declarations: Vec<UsageDeclaration>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let mut tx = self.pool.begin().await?;
+            for declaration in &declarations {
+                let transit_id = declaration.transit_id.to_string();
+                let usage_json = declaration.usage.to_string();
+                sqlx::query("INSERT INTO usage (transit_id, model, usage_json) VALUES (?, ?, ?)")
+                    .bind(&transit_id)
+                    .bind(&declaration.model)
+                    .bind(&usage_json)
+                    .execute(&mut *tx)
+                    .await?;
             }
             tx.commit().await?;
             tracing::debug!(count = declarations.len(), "stored usage records");
@@ -76,22 +109,25 @@ impl UsageStorage for SqliteUsageStorage {
         })
     }
 
-    fn list_usages(
+    fn list_transits(
         &self,
-        query: UsageQuery,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<UsagePage>> + Send + '_>> {
+        query: TransitQuery,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<TransitPage>> + Send + '_>> {
         Box::pin(async move {
             let limit = query.limit.get();
-            let fetch_limit = limit + 1; // sqlx parameter binding wants more concrete type
-            let limit = limit as usize; // ... others don't
+            let fetch_limit = limit + 1;
+            let limit = limit as usize;
 
             let rows = match (&query.cursor, &query.direction) {
                 (Some(cursor), Direction::Newer) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT transit_id, stored_at, model, usage_json FROM usage
-                         WHERE stored_at > ?
-                         ORDER BY stored_at ASC
+                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                                u.model, u.usage_json
+                         FROM identity i
+                         LEFT JOIN usage u ON i.transit_id = u.transit_id
+                         WHERE i.stored_at > ?
+                         ORDER BY i.stored_at ASC
                          LIMIT ?",
                     )
                     .bind(&stored_at)
@@ -102,9 +138,12 @@ impl UsageStorage for SqliteUsageStorage {
                 (Some(cursor), Direction::Older) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
-                        "SELECT transit_id, stored_at, model, usage_json FROM usage
-                         WHERE stored_at < ?
-                         ORDER BY stored_at DESC
+                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                                u.model, u.usage_json
+                         FROM identity i
+                         LEFT JOIN usage u ON i.transit_id = u.transit_id
+                         WHERE i.stored_at < ?
+                         ORDER BY i.stored_at DESC
                          LIMIT ?",
                     )
                     .bind(&stored_at)
@@ -114,8 +153,11 @@ impl UsageStorage for SqliteUsageStorage {
                 }
                 (None, Direction::Newer) => {
                     sqlx::query(
-                        "SELECT transit_id, stored_at, model, usage_json FROM usage
-                         ORDER BY stored_at ASC
+                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                                u.model, u.usage_json
+                         FROM identity i
+                         LEFT JOIN usage u ON i.transit_id = u.transit_id
+                         ORDER BY i.stored_at ASC
                          LIMIT ?",
                     )
                     .bind(fetch_limit)
@@ -124,8 +166,11 @@ impl UsageStorage for SqliteUsageStorage {
                 }
                 (None, Direction::Older) => {
                     sqlx::query(
-                        "SELECT transit_id, stored_at, model, usage_json FROM usage
-                         ORDER BY stored_at DESC
+                        "SELECT i.transit_id, i.stored_at, i.header_id, i.body_id,
+                                u.model, u.usage_json
+                         FROM identity i
+                         LEFT JOIN usage u ON i.transit_id = u.transit_id
+                         ORDER BY i.stored_at DESC
                          LIMIT ?",
                     )
                     .bind(fetch_limit)
@@ -135,29 +180,32 @@ impl UsageStorage for SqliteUsageStorage {
             };
 
             let has_more = rows.len() > limit;
-            let mut records: Vec<UsageRecord> = rows
+            let mut records: Vec<TransitRecord> = rows
                 .iter()
-                .take(limit) // NB: takes one less to get the number asked for
+                .take(limit)
                 .map(|row| {
                     let transit_id: String = row.get("transit_id");
                     let stored_at: String = row.get("stored_at");
+                    let header_id: Option<String> = row.get("header_id");
+                    let body_id: Option<String> = row.get("body_id");
                     let model: Option<String> = row.get("model");
-                    let usage_json: String = row.get("usage_json");
-                    UsageRecord {
+                    let usage_json: Option<String> = row.get("usage_json");
+                    TransitRecord {
                         transit_id: transit_id.parse().unwrap(),
                         stored_at: parse_timestamp(&stored_at),
+                        header_id,
+                        body_id,
                         model,
-                        usage: serde_json::from_str(&usage_json).unwrap(),
+                        usage: usage_json.map(|j| serde_json::from_str(&j).unwrap()),
                     }
                 })
                 .collect();
 
-            // keep returned records in oldest-to-newest order
             if matches!(query.direction, Direction::Older) {
                 records.reverse();
             }
 
-            Ok(UsagePage { records, has_more })
+            Ok(TransitPage { records, has_more })
         })
     }
 }
@@ -179,22 +227,36 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    async fn test_storage() -> SqliteUsageStorage {
-        SqliteUsageStorage::new("sqlite::memory:").await.unwrap()
+    async fn test_storage() -> SqliteTransitStorage {
+        SqliteTransitStorage::new("sqlite::memory:").await.unwrap()
     }
 
-    async fn seed_records(storage: &SqliteUsageStorage, count: u32) -> Vec<UsageRecord> {
-        let declarations: Vec<_> = (0..count)
-            .map(|_| UsageDeclaration {
+    async fn seed_records(storage: &SqliteTransitStorage, count: u32) -> Vec<TransitRecord> {
+        let identity_declarations: Vec<_> = (0..count)
+            .map(|_| IdentityDeclaration {
                 transit_id: Uuid::now_v7(),
+                header_id: Some("req-123".into()),
+                body_id: Some("chatcmpl-test".into()),
+            })
+            .collect();
+        let transit_ids: Vec<_> = identity_declarations.iter().map(|d| d.transit_id).collect();
+        storage
+            .store_identities(identity_declarations)
+            .await
+            .unwrap();
+
+        let usage_declarations: Vec<_> = transit_ids
+            .iter()
+            .map(|&transit_id| UsageDeclaration {
+                transit_id,
                 model: Some("test-model".into()),
                 usage: json!({"input_tokens": 10, "output_tokens": 20}),
             })
             .collect();
-        storage.store_usages(declarations).await.unwrap();
+        storage.store_usages(usage_declarations).await.unwrap();
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(count).unwrap(),
@@ -210,7 +272,7 @@ mod tests {
         let seeded = seed_records(&storage, 5).await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(3).unwrap(),
@@ -230,7 +292,7 @@ mod tests {
         let seeded = seed_records(&storage, 5).await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: Some(seeded[1].stored_at),
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(10).unwrap(),
@@ -250,7 +312,7 @@ mod tests {
         let seeded = seed_records(&storage, 5).await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Older,
                 limit: NonZeroU32::new(3).unwrap(),
@@ -270,7 +332,7 @@ mod tests {
         let seeded = seed_records(&storage, 5).await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: Some(seeded[3].stored_at),
                 direction: Direction::Older,
                 limit: NonZeroU32::new(10).unwrap(),
@@ -289,7 +351,7 @@ mod tests {
         let storage = test_storage().await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(10).unwrap(),
@@ -307,7 +369,7 @@ mod tests {
         seed_records(&storage, 3).await;
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(3).unwrap(),
@@ -320,21 +382,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identity_without_usage() {
+        let storage = test_storage().await;
+
+        let transit_id = Uuid::now_v7();
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id,
+                header_id: Some("req-abc".into()),
+                body_id: None,
+            }])
+            .await
+            .unwrap();
+
+        let page = storage
+            .list_transits(TransitQuery {
+                cursor: None,
+                direction: Direction::Newer,
+                limit: NonZeroU32::new(10).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].transit_id, transit_id);
+        assert_eq!(page.records[0].header_id.as_deref(), Some("req-abc"));
+        assert!(page.records[0].model.is_none());
+        assert!(page.records[0].usage.is_none());
+    }
+
+    #[tokio::test]
     async fn out_of_order_insertion_not_skipped() {
         let storage = test_storage().await;
 
         let early_id = Uuid::now_v7();
         let late_id = Uuid::now_v7();
 
-        let late_declaration = UsageDeclaration {
-            transit_id: late_id,
-            model: None,
-            usage: json!({"order": "second_to_arrive_first_to_store"}),
-        };
-        storage.store_usages(vec![late_declaration]).await.unwrap();
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id: late_id,
+                header_id: None,
+                body_id: Some("late".into()),
+            }])
+            .await
+            .unwrap();
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: None,
                 direction: Direction::Older,
                 limit: NonZeroU32::new(10).unwrap(),
@@ -344,15 +438,17 @@ mod tests {
         assert_eq!(page.records.len(), 1);
         let cursor = page.records[0].stored_at;
 
-        let early_declaration = UsageDeclaration {
-            transit_id: early_id,
-            model: None,
-            usage: json!({"order": "first_to_arrive_second_to_store"}),
-        };
-        storage.store_usages(vec![early_declaration]).await.unwrap();
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id: early_id,
+                header_id: None,
+                body_id: Some("early".into()),
+            }])
+            .await
+            .unwrap();
 
         let page = storage
-            .list_usages(UsageQuery {
+            .list_transits(TransitQuery {
                 cursor: Some(cursor),
                 direction: Direction::Newer,
                 limit: NonZeroU32::new(10).unwrap(),

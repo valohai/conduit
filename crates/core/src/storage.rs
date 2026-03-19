@@ -7,19 +7,30 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub struct Storages {
-    pub usage: Arc<dyn UsageStorage>,
+    pub transit: Arc<dyn TransitStorage>,
 }
 
-pub trait UsageStorage: Send + Sync {
+pub trait TransitStorage: Send + Sync {
+    fn store_identities(
+        &self,
+        declarations: Vec<IdentityDeclaration>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
     fn store_usages(
         &self,
         declarations: Vec<UsageDeclaration>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
-    fn list_usages(
+    fn list_transits(
         &self,
-        query: UsageQuery,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<UsagePage>> + Send + '_>>;
+        query: TransitQuery,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<TransitPage>> + Send + '_>>;
+}
+
+pub struct IdentityDeclaration {
+    pub transit_id: Uuid,
+    pub header_id: Option<String>,
+    pub body_id: Option<String>,
 }
 
 pub struct UsageDeclaration {
@@ -28,14 +39,16 @@ pub struct UsageDeclaration {
     pub usage: Value,
 }
 
-pub struct UsageRecord {
+pub struct TransitRecord {
     pub transit_id: Uuid,
     pub stored_at: chrono::DateTime<chrono::Utc>,
+    pub header_id: Option<String>, // LLM provider's identifier from the response header i.e. "debugging id"
+    pub body_id: Option<String>, // LLM provider's identifier from the response body i.e. "correlation id"
     pub model: Option<String>,
-    pub usage: Value,
+    pub usage: Option<Value>,
 }
 
-pub struct UsageQuery {
+pub struct TransitQuery {
     pub cursor: Option<chrono::DateTime<chrono::Utc>>,
     pub direction: Direction,
     pub limit: NonZeroU32,
@@ -46,7 +59,7 @@ pub enum Direction {
     Older,
 }
 
-pub struct UsagePage {
-    pub records: Vec<UsageRecord>,
+pub struct TransitPage {
+    pub records: Vec<TransitRecord>,
     pub has_more: bool,
 }

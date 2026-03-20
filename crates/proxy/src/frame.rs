@@ -15,6 +15,15 @@ pub enum Frame {
     UnaryResponse(Value),
 }
 
+impl std::fmt::Display for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Frame::SseData(v) => write!(f, "SseData({v})"),
+            Frame::UnaryResponse(v) => write!(f, "UnaryResponse({v})"),
+        }
+    }
+}
+
 impl Framer {
     pub fn streaming() -> Self {
         Self {

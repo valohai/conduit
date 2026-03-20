@@ -192,6 +192,7 @@ impl App {
             Cell::from("Time"),
             Cell::from("Provider"),
             Cell::from("Model"),
+            Cell::from("Est. Cost"),
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
         ])
@@ -216,6 +217,11 @@ impl App {
                     None => "-".to_string(),
                 };
 
+                let cost = record
+                    .estimate_cost()
+                    .map(|c| format!("${:.4}", c))
+                    .unwrap_or_else(|| "-".to_string());
+
                 let input_tokens = record
                     .usage
                     .as_ref()
@@ -239,6 +245,7 @@ impl App {
                     Cell::from(time_ago),
                     Cell::from(record.provider.to_string()),
                     Cell::from(model_str),
+                    Cell::from(cost),
                     Cell::from(input_tokens),
                     Cell::from(output_tokens),
                 ])
@@ -259,6 +266,7 @@ impl App {
             Constraint::Length(19),
             Constraint::Length(12),
             Constraint::Length(20),
+            Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(13),
         ];
@@ -344,6 +352,15 @@ impl App {
             Line::from(vec![
                 Span::styled("Model:      ", label_style),
                 Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Est. Cost:  ", label_style),
+                Span::raw(
+                    record
+                        .estimate_cost()
+                        .map(|c| format!("${:.6}", c))
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
             ]),
         ];
 

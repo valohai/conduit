@@ -57,6 +57,14 @@ pub struct TransitRecord {
     pub usage: Option<Value>,
 }
 
+impl TransitRecord {
+    pub fn estimate_cost(&self) -> Option<f64> {
+        let model = self.model.as_deref()?;
+        let usage = self.usage.as_ref()?;
+        crate::cost::estimate_cost(self.provider, model, usage)
+    }
+}
+
 pub struct TransitQuery {
     pub cursor: Option<chrono::DateTime<chrono::Utc>>,
     pub direction: Direction,

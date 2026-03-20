@@ -192,7 +192,7 @@ impl App {
             Cell::from("Time"),
             Cell::from("Provider"),
             Cell::from("Model"),
-            Cell::from("Est. Cost"),
+            Cell::from("Cost"),
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
         ])
@@ -219,7 +219,7 @@ impl App {
 
                 let cost = record
                     .estimate_cost()
-                    .map(|c| format!("${:.4}", c))
+                    .map(|c| format!("${:.5}", c))
                     .unwrap_or_else(|| "-".to_string());
 
                 let input_tokens = record
@@ -266,7 +266,7 @@ impl App {
             Constraint::Length(19),
             Constraint::Length(12),
             Constraint::Length(20),
-            Constraint::Length(12),
+            Constraint::Length(12), // NB: leave room for hundreds and symbols before the decimals
             Constraint::Length(12),
             Constraint::Length(13),
         ];

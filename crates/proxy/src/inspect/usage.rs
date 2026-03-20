@@ -31,18 +31,12 @@ impl Inspector for UsageInspector {
     }
 
     fn on_frame(&mut self, frame: &Frame) {
-        tracing::trace!("on_frame: {}", frame);
         match frame {
             Frame::SseData(json) | Frame::UnaryResponse(json) => merge_usage(&mut self.usage, json),
         }
     }
 
     fn finish(&mut self) -> Vec<Report> {
-        if let Some(usage) = &self.usage {
-            tracing::trace!("finish: {usage}");
-        } else {
-            tracing::trace!("finish: usage None");
-        }
         self.usage
             .take()
             .map(|usage| Report {

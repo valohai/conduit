@@ -72,8 +72,8 @@ pub struct TransitQuery {
 }
 
 pub enum Direction {
-    Newer,
-    Older,
+    After,  // records after the cursor, or from first existing if no cursor
+    Before, // records before the cursor, or from last existing if no cursor
 }
 
 pub struct TransitPage {

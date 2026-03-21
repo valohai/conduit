@@ -424,25 +424,29 @@ impl App {
                     self.open_selected_detail();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
-                    self.transit_table_state.select(Some(i.saturating_sub(1)));
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let i = self.transit_table_state.selected().unwrap_or(0);
-                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
-                    self.transit_table_state.select(Some(next));
-                    if next == self.transit_records.len().saturating_sub(1) {
+                    let prev = i.saturating_sub(1);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
                         self.auto_follow = true;
                     }
                 }
-                KeyCode::Home => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.auto_follow = false;
-                    self.transit_table_state.select(Some(0));
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                }
+                KeyCode::Home => {
+                    self.auto_follow = true;
+                    self.select_first();
                 }
                 KeyCode::End => {
-                    self.auto_follow = true;
-                    self.select_last();
+                    self.auto_follow = false;
+                    if !self.transit_records.is_empty() {
+                        self.transit_table_state
+                            .select(Some(self.transit_records.len() - 1));
+                    }
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.use_relative_time = !self.use_relative_time;
@@ -450,7 +454,7 @@ impl App {
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.auto_follow = !self.auto_follow;
                     if self.auto_follow {
-                        self.select_last();
+                        self.select_first();
                     }
                 }
                 KeyCode::Char('x') => {
@@ -460,17 +464,18 @@ impl App {
             },
             Event::Mouse(mouse) => match mouse.kind {
                 event::MouseEventKind::ScrollUp => {
-                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
-                    self.transit_table_state.select(Some(i.saturating_sub(1)));
+                    let prev = i.saturating_sub(1);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
+                        self.auto_follow = true;
+                    }
                 }
                 event::MouseEventKind::ScrollDown => {
+                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
                     let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
                     self.transit_table_state.select(Some(next));
-                    if next == self.transit_records.len().saturating_sub(1) {
-                        self.auto_follow = true;
-                    }
                 }
                 event::MouseEventKind::Down(event::MouseButton::Left) => {
                     if self.is_log_close_hit(mouse.column, mouse.row) {
@@ -604,10 +609,20 @@ impl App {
                         })
                         .collect();
                     if !new_records.is_empty() {
-                        self.latest_transit_stored_at = new_records.last().map(|r| r.stored_at);
-                        self.transit_records.extend(new_records);
-                        if self.auto_follow {
-                            self.select_last();
+                        self.latest_transit_stored_at = new_records.first().map(|r| r.stored_at);
+                        let new_record_count = new_records.len();
+                        self.transit_records.splice(0..0, new_records);
+                        let in_detail = matches!(self.view, View::TransitDetail(_));
+                        if self.auto_follow && !in_detail {
+                            self.select_first();
+                        } else {
+                            if let Some(selected) = self.transit_table_state.selected() {
+                                self.transit_table_state
+                                    .select(Some(selected + new_record_count));
+                            }
+                            if let View::TransitDetail(ref mut index) = self.view {
+                                *index += new_record_count;
+                            }
                         }
                     }
                 }
@@ -631,12 +646,11 @@ impl App {
         }
     }
 
-    fn select_last(&mut self) {
+    fn select_first(&mut self) {
         if self.transit_records.is_empty() {
             self.transit_table_state.select(None);
         } else {
-            self.transit_table_state
-                .select(Some(self.transit_records.len() - 1));
+            self.transit_table_state.select(Some(0));
         }
     }
 }
@@ -660,14 +674,14 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         .transit
         .list_transits(TransitQuery {
             cursor: None,
-            direction: Direction::Older,
+            direction: Direction::Before,
             limit,
         })
         .await;
 
     let mut cursor = match initial {
         Ok(page) => {
-            let stored_at = page.records.last().map(|r| r.stored_at);
+            let stored_at = page.records.first().map(|r| r.stored_at);
             track_incomplete(&mut incomplete_ids, &page.records);
             let _ = tx.send(PollMessage::Page(page));
             stored_at
@@ -701,15 +715,15 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
             .transit
             .list_transits(TransitQuery {
                 cursor,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit,
             })
             .await;
 
         match result {
             Ok(page) => {
-                if let Some(last) = page.records.last() {
-                    cursor = Some(last.stored_at);
+                if let Some(first) = page.records.first() {
+                    cursor = Some(first.stored_at);
                 }
                 track_incomplete(&mut incomplete_ids, &page.records);
                 let _ = tx.send(PollMessage::Page(page));

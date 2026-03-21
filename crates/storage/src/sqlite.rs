@@ -123,7 +123,7 @@ impl TransitStorage for SqliteTransitStorage {
             let limit = limit as usize;
 
             let rows = match (&query.cursor, &query.direction) {
-                (Some(cursor), Direction::Newer) => {
+                (Some(cursor), Direction::After) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
@@ -139,7 +139,7 @@ impl TransitStorage for SqliteTransitStorage {
                     .fetch_all(&self.pool)
                     .await?
                 }
-                (Some(cursor), Direction::Older) => {
+                (Some(cursor), Direction::Before) => {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
@@ -155,7 +155,7 @@ impl TransitStorage for SqliteTransitStorage {
                     .fetch_all(&self.pool)
                     .await?
                 }
-                (None, Direction::Newer) => {
+                (None, Direction::After) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
@@ -168,7 +168,7 @@ impl TransitStorage for SqliteTransitStorage {
                     .fetch_all(&self.pool)
                     .await?
                 }
-                (None, Direction::Older) => {
+                (None, Direction::Before) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
                                 u.model, u.usage_json
@@ -190,7 +190,9 @@ impl TransitStorage for SqliteTransitStorage {
                 .filter_map(row_to_transit_record)
                 .collect();
 
-            if matches!(query.direction, Direction::Older) {
+            if matches!(query.direction, Direction::After) {
+                // result order is still always "stored_at DESC",
+                // purely for the newest-at-top display in TUI
                 records.reverse();
             }
 
@@ -289,7 +291,10 @@ mod tests {
         SqliteTransitStorage::new("sqlite::memory:").await.unwrap()
     }
 
-    async fn seed_records(storage: &SqliteTransitStorage, count: u32) -> Vec<TransitRecord> {
+    async fn seed_transit_records(
+        storage: &SqliteTransitStorage,
+        count: u32,
+    ) -> Vec<TransitRecord> {
         let identity_declarations: Vec<_> = (0..count)
             .map(|_| IdentityDeclaration {
                 transit_id: Uuid::now_v7(),
@@ -317,23 +322,24 @@ mod tests {
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit: NonZeroU32::new(count).unwrap(),
             })
             .await
             .unwrap();
+
         page.records
     }
 
     #[tokio::test]
-    async fn list_newer_no_cursor() {
+    async fn list_latest_records() {
         let storage = test_storage().await;
-        let seeded = seed_records(&storage, 5).await;
+        let all = seed_transit_records(&storage, 5).await;
 
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Newer,
+                direction: Direction::Before,
                 limit: NonZeroU32::new(3).unwrap(),
             })
             .await
@@ -341,39 +347,20 @@ mod tests {
 
         assert_eq!(page.records.len(), 3);
         assert!(page.has_more);
-        assert_eq!(page.records[0].transit_id, seeded[0].transit_id);
-        assert_eq!(page.records[2].transit_id, seeded[2].transit_id);
+        assert_eq!(page.records[0].transit_id, all[0].transit_id);
+        assert_eq!(page.records[1].transit_id, all[1].transit_id);
+        assert_eq!(page.records[2].transit_id, all[2].transit_id);
     }
 
     #[tokio::test]
-    async fn list_newer_with_cursor() {
+    async fn list_oldest_records() {
         let storage = test_storage().await;
-        let seeded = seed_records(&storage, 5).await;
-
-        let page = storage
-            .list_transits(TransitQuery {
-                cursor: Some(seeded[1].stored_at),
-                direction: Direction::Newer,
-                limit: NonZeroU32::new(10).unwrap(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(page.records.len(), 3);
-        assert!(!page.has_more);
-        assert_eq!(page.records[0].transit_id, seeded[2].transit_id);
-        assert_eq!(page.records[2].transit_id, seeded[4].transit_id);
-    }
-
-    #[tokio::test]
-    async fn list_older_no_cursor() {
-        let storage = test_storage().await;
-        let seeded = seed_records(&storage, 5).await;
+        let all = seed_transit_records(&storage, 5).await;
 
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Older,
+                direction: Direction::After,
                 limit: NonZeroU32::new(3).unwrap(),
             })
             .await
@@ -381,19 +368,20 @@ mod tests {
 
         assert_eq!(page.records.len(), 3);
         assert!(page.has_more);
-        assert_eq!(page.records[0].transit_id, seeded[2].transit_id);
-        assert_eq!(page.records[2].transit_id, seeded[4].transit_id);
+        assert_eq!(page.records[0].transit_id, all[2].transit_id);
+        assert_eq!(page.records[1].transit_id, all[3].transit_id);
+        assert_eq!(page.records[2].transit_id, all[4].transit_id);
     }
 
     #[tokio::test]
-    async fn list_older_with_cursor() {
+    async fn list_after_cursor() {
         let storage = test_storage().await;
-        let seeded = seed_records(&storage, 5).await;
+        let all = seed_transit_records(&storage, 5).await;
 
         let page = storage
             .list_transits(TransitQuery {
-                cursor: Some(seeded[3].stored_at),
-                direction: Direction::Older,
+                cursor: Some(all[3].stored_at),
+                direction: Direction::After,
                 limit: NonZeroU32::new(10).unwrap(),
             })
             .await
@@ -401,8 +389,30 @@ mod tests {
 
         assert_eq!(page.records.len(), 3);
         assert!(!page.has_more);
-        assert_eq!(page.records[0].transit_id, seeded[0].transit_id);
-        assert_eq!(page.records[2].transit_id, seeded[2].transit_id);
+        assert_eq!(page.records[0].transit_id, all[0].transit_id);
+        assert_eq!(page.records[1].transit_id, all[1].transit_id);
+        assert_eq!(page.records[2].transit_id, all[2].transit_id);
+    }
+
+    #[tokio::test]
+    async fn list_before_cursor() {
+        let storage = test_storage().await;
+        let all = seed_transit_records(&storage, 5).await;
+
+        let page = storage
+            .list_transits(TransitQuery {
+                cursor: Some(all[1].stored_at),
+                direction: Direction::Before,
+                limit: NonZeroU32::new(10).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.records.len(), 3);
+        assert!(!page.has_more);
+        assert_eq!(page.records[0].transit_id, all[2].transit_id);
+        assert_eq!(page.records[1].transit_id, all[3].transit_id);
+        assert_eq!(page.records[2].transit_id, all[4].transit_id);
     }
 
     #[tokio::test]
@@ -412,7 +422,7 @@ mod tests {
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit: NonZeroU32::new(10).unwrap(),
             })
             .await
@@ -425,12 +435,12 @@ mod tests {
     #[tokio::test]
     async fn list_exact_limit() {
         let storage = test_storage().await;
-        seed_records(&storage, 3).await;
+        seed_transit_records(&storage, 3).await;
 
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit: NonZeroU32::new(3).unwrap(),
             })
             .await
@@ -458,7 +468,7 @@ mod tests {
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit: NonZeroU32::new(10).unwrap(),
             })
             .await
@@ -491,7 +501,7 @@ mod tests {
         let page = storage
             .list_transits(TransitQuery {
                 cursor: None,
-                direction: Direction::Older,
+                direction: Direction::Before,
                 limit: NonZeroU32::new(10).unwrap(),
             })
             .await
@@ -512,7 +522,7 @@ mod tests {
         let page = storage
             .list_transits(TransitQuery {
                 cursor: Some(cursor),
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit: NonZeroU32::new(10).unwrap(),
             })
             .await

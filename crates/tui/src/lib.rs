@@ -631,6 +631,9 @@ impl App {
                         if self.auto_follow && !in_detail {
                             self.select_first();
                         } else {
+                            let current_offset = self.transit_table_state.offset();
+                            *self.transit_table_state.offset_mut() =
+                                current_offset + new_record_count;
                             if let Some(selected) = self.transit_table_state.selected() {
                                 self.transit_table_state
                                     .select(Some(selected + new_record_count));

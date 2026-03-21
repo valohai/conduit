@@ -176,6 +176,7 @@ async fn proxy_handler(
             match chunk {
                 Ok(bytes) => {
                     for frame in framer.process_chunk(&bytes) {
+                        tracing::trace!("chunk frame: {frame}");
                         for inspector in &mut inspectors {
                             inspector.on_frame(&frame);
                         }
@@ -197,6 +198,7 @@ async fn proxy_handler(
         }
 
         for frame in framer.finish() {
+            tracing::trace!("finish frame: {frame}");
             for inspector in &mut inspectors {
                 inspector.on_frame(&frame);
             }
@@ -204,6 +206,7 @@ async fn proxy_handler(
 
         for inspector in &mut inspectors {
             for report in inspector.finish() {
+                tracing::trace!("new report: {report}");
                 let _ = report_tx.send(report);
             }
         }

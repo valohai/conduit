@@ -55,10 +55,15 @@ fn restore_terminal() {
 
 struct App {
     _config: Config,
+    storages: Storages,
     should_quit: bool,
     view: View,
     transit_records: Vec<TransitRecord>,
     latest_transit_stored_at: Option<chrono::DateTime<chrono::Utc>>,
+    oldest_transit_stored_at: Option<chrono::DateTime<chrono::Utc>>,
+    has_older_records: bool,
+    is_loading_newer: bool,
+    is_loading_older: bool,
     transit_table_state: TableState,
     auto_follow: bool,
     use_relative_time: bool,
@@ -66,7 +71,7 @@ struct App {
     log_buffer: LogBuffer,
     log_area: ratatui::layout::Rect,
     mouse_position: (u16, u16),
-    is_loading: bool,
+    poll_tx: mpsc::Sender<PollMessage>,
     poll_rx: mpsc::Receiver<PollMessage>,
     poll_abort: tokio::task::AbortHandle,
 }
@@ -76,14 +81,20 @@ impl App {
         let (tx, rx) = mpsc::channel();
 
         let handle = tokio::runtime::Handle::current();
-        let task = handle.spawn(poll_loop(storages, tx));
+        let poll_tx = tx.clone();
+        let poll_storages = storages.clone();
+        let task = handle.spawn(poll_loop(poll_storages, tx));
 
         Self {
             _config,
+            storages,
             should_quit: false,
             view: View::TransitListing,
             transit_records: Vec::new(),
             latest_transit_stored_at: None,
+            oldest_transit_stored_at: None,
+            has_older_records: true,
+            is_loading_older: false,
             transit_table_state: TableState::default(),
             auto_follow: true,
             use_relative_time: true,
@@ -91,7 +102,8 @@ impl App {
             log_buffer,
             log_area: ratatui::layout::Rect::ZERO,
             mouse_position: (0, 0),
-            is_loading: true,
+            is_loading_newer: true,
+            poll_tx,
             poll_rx: rx,
             poll_abort: task.abort_handle(),
         }
@@ -192,7 +204,7 @@ impl App {
             Cell::from("Time"),
             Cell::from("Provider"),
             Cell::from("Model"),
-            Cell::from("Est. Cost"),
+            Cell::from("Cost"),
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
         ])
@@ -219,7 +231,7 @@ impl App {
 
                 let cost = record
                     .estimate_cost()
-                    .map(|c| format!("${:.4}", c))
+                    .map(|c| format!("${:.5}", c))
                     .unwrap_or_else(|| "-".to_string());
 
                 let input_tokens = record
@@ -252,7 +264,7 @@ impl App {
             })
             .collect();
 
-        if self.is_loading {
+        if self.is_loading_newer {
             rows.push(
                 Row::new(vec![Cell::from(""), Cell::from("Loading...")]).style(
                     Style::default()
@@ -266,7 +278,7 @@ impl App {
             Constraint::Length(19),
             Constraint::Length(12),
             Constraint::Length(20),
-            Constraint::Length(12),
+            Constraint::Length(12), // NB: leave room for hundreds and symbols before the decimals
             Constraint::Length(12),
             Constraint::Length(13),
         ];
@@ -285,20 +297,14 @@ impl App {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, table_area, &mut scrollbar_state);
 
-        let status = if self.is_loading {
-            " Loading... ".to_string()
-        } else {
-            let follow = if self.auto_follow { "ON" } else { "OFF" };
-            format!(
-                "auto-follow: {} | q: quit, F: follow, T: {}, Enter/Right/l: details ",
-                follow,
-                if self.use_relative_time {
-                    "absolute time"
-                } else {
-                    "relative time"
-                },
-            )
-        };
+        let status = format!(
+            "Enter/Right/l: details, q: quit, f: go to latest, t: {}",
+            if self.use_relative_time {
+                "absolute times"
+            } else {
+                "relative times"
+            },
+        );
 
         let status_style = Style::default().fg(Color::DarkGray);
         frame.render_widget(Paragraph::new(status).style(status_style), status_area);
@@ -329,10 +335,6 @@ impl App {
                 Span::raw(record.transit_id.to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Provider:   ", label_style),
-                Span::raw(record.provider.to_string()),
-            ]),
-            Line::from(vec![
                 Span::styled("Time:       ", label_style),
                 Span::raw(
                     record
@@ -342,16 +344,20 @@ impl App {
                 ),
             ]),
             Line::from(vec![
+                Span::styled("Provider:   ", label_style),
+                Span::raw(record.provider.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Model:      ", label_style),
+                Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
+            ]),
+            Line::from(vec![
                 Span::styled("Header ID:  ", label_style),
                 Span::raw(record.header_id.as_deref().unwrap_or("-").to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Body ID:    ", label_style),
                 Span::raw(record.body_id.as_deref().unwrap_or("-").to_string()),
-            ]),
-            Line::from(vec![
-                Span::styled("Model:      ", label_style),
-                Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Est. Cost:  ", label_style),
@@ -377,7 +383,7 @@ impl App {
         let detail = Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" Transit Details ")
+                    .title(" Request Details ")
                     .borders(Borders::ALL),
             )
             .scroll((self.transit_detail_scroll, 0));
@@ -390,7 +396,7 @@ impl App {
 
         let position = format!(" {}/{} ", index + 1, self.transit_records.len());
         let status = format!(
-            "{}| Backspace/Left/h: back, Up/Down: scroll, [/]: prev/next record ",
+            "{}| Backspace/Left/h: back, Up/Down: scroll, [: previvous, ]: next",
             position,
         );
         frame.render_widget(
@@ -424,25 +430,47 @@ impl App {
                     self.open_selected_detail();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
-                    self.transit_table_state.select(Some(i.saturating_sub(1)));
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let i = self.transit_table_state.selected().unwrap_or(0);
-                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
-                    self.transit_table_state.select(Some(next));
-                    if next == self.transit_records.len().saturating_sub(1) {
+                    let prev = i.saturating_sub(1);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
                         self.auto_follow = true;
                     }
                 }
-                KeyCode::Home => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.auto_follow = false;
-                    self.transit_table_state.select(Some(0));
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                    self.request_older_records_if_needed();
+                }
+                KeyCode::PageUp => {
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let prev = i.saturating_sub(PG_BUTTON_JUMP);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
+                        self.auto_follow = true;
+                    }
+                }
+                KeyCode::PageDown => {
+                    self.auto_follow = false;
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next =
+                        (i + PG_BUTTON_JUMP).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                    self.request_older_records_if_needed();
+                }
+                KeyCode::Home => {
+                    self.auto_follow = true;
+                    self.select_first();
                 }
                 KeyCode::End => {
-                    self.auto_follow = true;
-                    self.select_last();
+                    self.auto_follow = false;
+                    if !self.transit_records.is_empty() {
+                        self.transit_table_state
+                            .select(Some(self.transit_records.len() - 1));
+                    }
+                    self.request_older_records_if_needed();
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.use_relative_time = !self.use_relative_time;
@@ -450,7 +478,7 @@ impl App {
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.auto_follow = !self.auto_follow;
                     if self.auto_follow {
-                        self.select_last();
+                        self.select_first();
                     }
                 }
                 KeyCode::Char('x') => {
@@ -460,17 +488,19 @@ impl App {
             },
             Event::Mouse(mouse) => match mouse.kind {
                 event::MouseEventKind::ScrollUp => {
-                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
-                    self.transit_table_state.select(Some(i.saturating_sub(1)));
+                    let prev = i.saturating_sub(1);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
+                        self.auto_follow = true;
+                    }
                 }
                 event::MouseEventKind::ScrollDown => {
+                    self.auto_follow = false;
                     let i = self.transit_table_state.selected().unwrap_or(0);
                     let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
                     self.transit_table_state.select(Some(next));
-                    if next == self.transit_records.len().saturating_sub(1) {
-                        self.auto_follow = true;
-                    }
+                    self.request_older_records_if_needed();
                 }
                 event::MouseEventKind::Down(event::MouseButton::Left) => {
                     if self.is_log_close_hit(mouse.column, mouse.row) {
@@ -530,12 +560,14 @@ impl App {
                     self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(1);
                 }
                 KeyCode::PageUp => {
-                    self.transit_detail_scroll =
-                        self.transit_detail_scroll.saturating_sub(PAGE_SIZE as u16);
+                    self.transit_detail_scroll = self
+                        .transit_detail_scroll
+                        .saturating_sub(PG_BUTTON_JUMP as u16);
                 }
                 KeyCode::PageDown => {
-                    self.transit_detail_scroll =
-                        self.transit_detail_scroll.saturating_add(PAGE_SIZE as u16);
+                    self.transit_detail_scroll = self
+                        .transit_detail_scroll
+                        .saturating_add(PG_BUTTON_JUMP as u16);
                 }
                 KeyCode::Home => {
                     self.transit_detail_scroll = 0;
@@ -589,10 +621,13 @@ impl App {
         while let Ok(msg) = self.poll_rx.try_recv() {
             match msg {
                 PollMessage::Loading => {
-                    self.is_loading = true;
+                    self.is_loading_newer = true;
                 }
                 PollMessage::Page(page) => {
-                    self.is_loading = false;
+                    self.is_loading_newer = false;
+                    if self.oldest_transit_stored_at.is_none() {
+                        self.has_older_records = page.has_more;
+                    }
                     let new_records: Vec<_> = page
                         .records
                         .into_iter()
@@ -604,11 +639,45 @@ impl App {
                         })
                         .collect();
                     if !new_records.is_empty() {
-                        self.latest_transit_stored_at = new_records.last().map(|r| r.stored_at);
-                        self.transit_records.extend(new_records);
-                        if self.auto_follow {
-                            self.select_last();
+                        self.latest_transit_stored_at = new_records.first().map(|r| r.stored_at);
+                        if self.oldest_transit_stored_at.is_none() {
+                            self.oldest_transit_stored_at = new_records.last().map(|r| r.stored_at);
                         }
+                        let new_record_count = new_records.len();
+                        self.transit_records.splice(0..0, new_records);
+                        let in_detail = matches!(self.view, View::TransitDetail(_));
+                        if self.auto_follow && !in_detail {
+                            self.select_first();
+                        } else {
+                            let current_offset = self.transit_table_state.offset();
+                            *self.transit_table_state.offset_mut() =
+                                current_offset + new_record_count;
+                            if let Some(selected) = self.transit_table_state.selected() {
+                                self.transit_table_state
+                                    .select(Some(selected + new_record_count));
+                            }
+                            if let View::TransitDetail(ref mut index) = self.view {
+                                *index += new_record_count;
+                            }
+                        }
+                    }
+                }
+                PollMessage::OlderPage(page) => {
+                    self.is_loading_older = false;
+                    self.has_older_records = page.has_more;
+                    let new_records: Vec<_> = page
+                        .records
+                        .into_iter()
+                        .filter(|r| {
+                            !self
+                                .transit_records
+                                .iter()
+                                .any(|existing| existing.transit_id == r.transit_id)
+                        })
+                        .collect();
+                    if !new_records.is_empty() {
+                        self.oldest_transit_stored_at = new_records.last().map(|r| r.stored_at);
+                        self.transit_records.extend(new_records);
                     }
                 }
                 PollMessage::Backfill(updated_records) => {
@@ -624,35 +693,76 @@ impl App {
                     }
                 }
                 PollMessage::Error(err) => {
-                    self.is_loading = false;
+                    self.is_loading_newer = false;
+                    self.is_loading_older = false;
                     tracing::error!("{}", err);
                 }
             }
         }
     }
 
-    fn select_last(&mut self) {
+    fn select_first(&mut self) {
         if self.transit_records.is_empty() {
             self.transit_table_state.select(None);
         } else {
-            self.transit_table_state
-                .select(Some(self.transit_records.len() - 1));
+            self.transit_table_state.select(Some(0));
         }
+    }
+
+    fn request_older_records_if_needed(&mut self) {
+        let selected = self.transit_table_state.selected().unwrap_or(0);
+        let at_end = !self.transit_records.is_empty()
+            && selected >= self.transit_records.len().saturating_sub(1);
+
+        if !at_end || !self.has_older_records || self.is_loading_older {
+            return;
+        }
+        self.is_loading_older = true;
+
+        let cursor = self
+            .oldest_transit_stored_at
+            .or_else(|| self.transit_records.last().map(|r| r.stored_at));
+
+        let storages = self.storages.clone();
+        let tx = self.poll_tx.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            let limit = NonZeroU32::new(OLDER_PAGE_SIZE).unwrap();
+            let result = storages
+                .transit
+                .list_transits(TransitQuery {
+                    cursor,
+                    direction: Direction::Before,
+                    limit,
+                })
+                .await;
+            match result {
+                Ok(page) => {
+                    let _ = tx.send(PollMessage::OlderPage(page));
+                }
+                Err(e) => {
+                    let _ = tx.send(PollMessage::Error(e.to_string()));
+                }
+            }
+        });
     }
 }
 
-const PAGE_SIZE: u32 = 50;
+const PG_BUTTON_JUMP: usize = 10;
+const INITIAL_PAGE_SIZE: u32 = 50;
+const OLDER_PAGE_SIZE: u32 = 25;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum PollMessage {
     Loading,
     Page(TransitPage),
+    OlderPage(TransitPage),
     Backfill(Vec<TransitRecord>),
     Error(String),
 }
 
 async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
-    let limit = NonZeroU32::new(PAGE_SIZE).unwrap();
+    let limit = NonZeroU32::new(INITIAL_PAGE_SIZE).unwrap();
     let mut incomplete_ids: HashSet<Uuid> = HashSet::new();
 
     let _ = tx.send(PollMessage::Loading);
@@ -660,14 +770,14 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
         .transit
         .list_transits(TransitQuery {
             cursor: None,
-            direction: Direction::Older,
+            direction: Direction::Before,
             limit,
         })
         .await;
 
     let mut cursor = match initial {
         Ok(page) => {
-            let stored_at = page.records.last().map(|r| r.stored_at);
+            let stored_at = page.records.first().map(|r| r.stored_at);
             track_incomplete(&mut incomplete_ids, &page.records);
             let _ = tx.send(PollMessage::Page(page));
             stored_at
@@ -701,15 +811,15 @@ async fn poll_loop(storages: Storages, tx: mpsc::Sender<PollMessage>) {
             .transit
             .list_transits(TransitQuery {
                 cursor,
-                direction: Direction::Newer,
+                direction: Direction::After,
                 limit,
             })
             .await;
 
         match result {
             Ok(page) => {
-                if let Some(last) = page.records.last() {
-                    cursor = Some(last.stored_at);
+                if let Some(first) = page.records.first() {
+                    cursor = Some(first.stored_at);
                 }
                 track_incomplete(&mut incomplete_ids, &page.records);
                 let _ = tx.send(PollMessage::Page(page));

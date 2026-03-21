@@ -4,6 +4,7 @@ mod usage;
 pub use identity::IdentityInspector;
 pub use usage::UsageInspector;
 
+use std::fmt;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -41,6 +42,32 @@ pub enum ReportPayload {
         model: Option<String>,
         usage: Value,
     },
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Report({}, {})", self.transit_id, self.payload)
+    }
+}
+
+impl fmt::Display for ReportPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReportPayload::Identity {
+                provider,
+                header_id,
+                body_id,
+            } => {
+                write!(
+                    f,
+                    "Identity({provider:?}, header={header_id:?}, body={body_id:?})"
+                )
+            }
+            ReportPayload::Usage { model, usage } => {
+                write!(f, "Usage(model={model:?}, {usage})")
+            }
+        }
+    }
 }
 
 const BATCH_SIZE: usize = 64;

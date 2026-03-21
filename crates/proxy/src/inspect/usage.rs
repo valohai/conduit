@@ -31,14 +31,15 @@ impl Inspector for UsageInspector {
     }
 
     fn on_frame(&mut self, frame: &Frame) {
-        tracing::trace!("on_frame: {:?}", frame);
         match frame {
-            Frame::SseData(json) | Frame::UnaryResponse(json) => merge_usage(&mut self.usage, json),
+            Frame::SseData(json) | Frame::UnaryResponse(json) => {
+                extract_model(&mut self.model, json);
+                merge_usage(&mut self.usage, json);
+            }
         }
     }
 
     fn finish(&mut self) -> Vec<Report> {
-        tracing::trace!("finish: {:?}", self.usage);
         self.usage
             .take()
             .map(|usage| Report {
@@ -50,6 +51,25 @@ impl Inspector for UsageInspector {
             })
             .into_iter()
             .collect()
+    }
+}
+
+fn extract_model(model: &mut Option<String>, payload: &Value) {
+    let candidates: &[&Value] = &[
+        // OpenAI Chat Completions unary body
+        // OpenAI Chat Completions SSE, in most events
+        // Anthropic Messages unary body
+        &payload["model"],
+        // Anthropic Messages SSE message_start events
+        &payload["message"]["model"],
+        // OpenAI Responses SSE, in most events
+        &payload["response"]["model"],
+    ];
+    for candidate in candidates {
+        if let Some(m) = candidate.as_str() {
+            *model = Some(m.to_string());
+            return;
+        }
     }
 }
 
@@ -87,7 +107,7 @@ mod tests {
     use crate::frame::Framer;
     use serde_json::json;
 
-    fn extract_usage(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Value> {
+    fn extract_report(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Report> {
         let mut inspector = UsageInspector::new(Uuid::nil(), Provider::default());
         for chunk in chunks {
             for frame in framer.process_chunk(chunk) {
@@ -97,14 +117,14 @@ mod tests {
         for frame in framer.finish() {
             inspector.on_frame(&frame);
         }
-        inspector
-            .finish()
-            .into_iter()
-            .map(|r| match r.payload {
-                ReportPayload::Usage { usage, .. } => usage,
-                _ => panic!("unexpected report payload: {:?}", r.payload),
-            })
-            .next()
+        inspector.finish().into_iter().next()
+    }
+
+    fn extract_usage(framer: &mut Framer, chunks: &[&[u8]]) -> Option<Value> {
+        extract_report(framer, chunks).map(|r| match r.payload {
+            ReportPayload::Usage { usage, .. } => usage,
+            _ => panic!("unexpected report payload: {:?}", r.payload),
+        })
     }
 
     fn extract_usage_unary(body: &Value) -> Option<Value> {
@@ -119,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn model_extracted_from_request_body() {
+    fn model_from_request_as_fallback() {
         let request_body = json!({"model": "gpt-5.4", "messages": []});
         let response_body = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5}});
         let response_bytes = serde_json::to_vec(&response_body).unwrap();
@@ -136,12 +156,35 @@ mod tests {
 
         let reports = inspector.finish();
         assert_eq!(reports.len(), 1);
-        let report_payload = reports.into_iter().next().unwrap().payload;
-        let model = match report_payload {
+        let model = match reports.into_iter().next().unwrap().payload {
             ReportPayload::Usage { model, .. } => model,
-            _ => panic!("unexpected report payload: {:?}", report_payload),
+            _ => panic!("unexpected"),
         };
         assert_eq!(model, Some("gpt-5.4".to_string()));
+    }
+
+    #[test]
+    fn model_from_response_overrides_request() {
+        let request_body = json!({"model": "gpt-5.4", "messages": []});
+        let response_body = json!({"model": "gpt-5.4-2026-03-01", "usage": {"prompt_tokens": 10}});
+        let response_bytes = serde_json::to_vec(&response_body).unwrap();
+
+        let mut framer = Framer::unary();
+        let mut inspector = UsageInspector::new(Uuid::nil(), Provider::default());
+        inspector.on_request(&HeaderMap::new(), Some(&request_body));
+        for frame in framer.process_chunk(&response_bytes) {
+            inspector.on_frame(&frame);
+        }
+        for frame in framer.finish() {
+            inspector.on_frame(&frame);
+        }
+
+        let reports = inspector.finish();
+        let model = match reports.into_iter().next().unwrap().payload {
+            ReportPayload::Usage { model, .. } => model,
+            _ => panic!("unexpected"),
+        };
+        assert_eq!(model, Some("gpt-5.4-2026-03-01".to_string()));
     }
 
     #[test]

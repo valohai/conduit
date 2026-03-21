@@ -435,6 +435,21 @@ impl App {
                     let next = (i + 1).min(self.transit_records.len().saturating_sub(1));
                     self.transit_table_state.select(Some(next));
                 }
+                KeyCode::PageUp => {
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let prev = i.saturating_sub(PG_BUTTON_JUMP);
+                    self.transit_table_state.select(Some(prev));
+                    if prev == 0 {
+                        self.auto_follow = true;
+                    }
+                }
+                KeyCode::PageDown => {
+                    self.auto_follow = false;
+                    let i = self.transit_table_state.selected().unwrap_or(0);
+                    let next =
+                        (i + PG_BUTTON_JUMP).min(self.transit_records.len().saturating_sub(1));
+                    self.transit_table_state.select(Some(next));
+                }
                 KeyCode::Home => {
                     self.auto_follow = true;
                     self.select_first();
@@ -533,12 +548,14 @@ impl App {
                     self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(1);
                 }
                 KeyCode::PageUp => {
-                    self.transit_detail_scroll =
-                        self.transit_detail_scroll.saturating_sub(PAGE_SIZE as u16);
+                    self.transit_detail_scroll = self
+                        .transit_detail_scroll
+                        .saturating_sub(PG_BUTTON_JUMP as u16);
                 }
                 KeyCode::PageDown => {
-                    self.transit_detail_scroll =
-                        self.transit_detail_scroll.saturating_add(PAGE_SIZE as u16);
+                    self.transit_detail_scroll = self
+                        .transit_detail_scroll
+                        .saturating_add(PG_BUTTON_JUMP as u16);
                 }
                 KeyCode::Home => {
                     self.transit_detail_scroll = 0;
@@ -653,6 +670,7 @@ impl App {
     }
 }
 
+const PG_BUTTON_JUMP: usize = 10;
 const PAGE_SIZE: u32 = 50;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 

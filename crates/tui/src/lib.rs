@@ -288,14 +288,12 @@ impl App {
         let status = if self.is_loading {
             " Loading... ".to_string()
         } else {
-            let follow = if self.auto_follow { "ON" } else { "OFF" };
             format!(
-                "auto-follow: {} | q: quit, F: follow, T: {}, Enter/Right/l: details ",
-                follow,
+                "Enter/Right/l: details, q: quit, f: go to latest, t: {}",
                 if self.use_relative_time {
-                    "absolute time"
+                    "absolute times"
                 } else {
-                    "relative time"
+                    "relative times"
                 },
             )
         };
@@ -329,10 +327,6 @@ impl App {
                 Span::raw(record.transit_id.to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Provider:   ", label_style),
-                Span::raw(record.provider.to_string()),
-            ]),
-            Line::from(vec![
                 Span::styled("Time:       ", label_style),
                 Span::raw(
                     record
@@ -342,16 +336,20 @@ impl App {
                 ),
             ]),
             Line::from(vec![
+                Span::styled("Provider:   ", label_style),
+                Span::raw(record.provider.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Model:      ", label_style),
+                Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
+            ]),
+            Line::from(vec![
                 Span::styled("Header ID:  ", label_style),
                 Span::raw(record.header_id.as_deref().unwrap_or("-").to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Body ID:    ", label_style),
                 Span::raw(record.body_id.as_deref().unwrap_or("-").to_string()),
-            ]),
-            Line::from(vec![
-                Span::styled("Model:      ", label_style),
-                Span::raw(record.model.as_deref().unwrap_or("-").to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Est. Cost:  ", label_style),
@@ -377,7 +375,7 @@ impl App {
         let detail = Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" Transit Details ")
+                    .title(" Request Details ")
                     .borders(Borders::ALL),
             )
             .scroll((self.transit_detail_scroll, 0));
@@ -390,7 +388,7 @@ impl App {
 
         let position = format!(" {}/{} ", index + 1, self.transit_records.len());
         let status = format!(
-            "{}| Backspace/Left/h: back, Up/Down: scroll, [/]: prev/next record ",
+            "{}| Backspace/Left/h: back, Up/Down: scroll, [: previvous, ]: next",
             position,
         );
         frame.render_widget(

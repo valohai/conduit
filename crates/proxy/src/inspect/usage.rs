@@ -9,7 +9,7 @@ use crate::inspect::{Inspector, Report, ReportPayload};
 
 pub struct UsageInspector {
     transit_id: Uuid,
-    _provider: Provider,
+    provider: Provider,
     model: Option<String>,
     usage: Option<Value>,
 }
@@ -18,7 +18,7 @@ impl UsageInspector {
     pub fn new(transit_id: Uuid, provider: Provider) -> Self {
         Self {
             transit_id,
-            _provider: provider,
+            provider,
             model: None,
             usage: None,
         }
@@ -45,6 +45,7 @@ impl Inspector for UsageInspector {
             .map(|usage| Report {
                 transit_id: self.transit_id,
                 payload: ReportPayload::Usage {
+                    provider: self.provider,
                     model: self.model.take(),
                     usage,
                 },

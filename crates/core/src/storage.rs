@@ -44,6 +44,7 @@ pub struct IdentityDeclaration {
 
 pub struct UsageDeclaration {
     pub transit_id: Uuid,
+    pub provider: Provider,
     pub model: Option<String>,
     pub usage: Value,
 }
@@ -56,10 +57,14 @@ pub struct TransitRecord {
     pub body_id: Option<String>, // LLM provider's identifier from the response body i.e. "correlation id"
     pub model: Option<String>,
     pub usage: Option<Value>,
+    pub estimated_cost_usd: Option<f64>,
 }
 
 impl TransitRecord {
     pub fn estimate_cost(&self) -> Option<f64> {
+        if let Some(cost) = self.estimated_cost_usd {
+            return Some(cost);
+        }
         let model = self.model.as_deref()?;
         let usage = self.usage.as_ref()?;
         crate::cost::estimate_cost(self.provider, model, usage)

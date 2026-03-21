@@ -50,7 +50,8 @@ impl SqliteTransitStorage {
             "CREATE TABLE IF NOT EXISTS usage (
                 transit_id TEXT PRIMARY KEY NOT NULL,
                 model TEXT,
-                usage_json TEXT NOT NULL
+                usage_json TEXT NOT NULL,
+                estimated_cost_usd REAL
             )",
         )
         .execute(&pool)
@@ -100,10 +101,14 @@ impl TransitStorage for SqliteTransitStorage {
             for declaration in &declarations {
                 let transit_id = declaration.transit_id.to_string();
                 let usage_json = declaration.usage.to_string();
-                sqlx::query("INSERT INTO usage (transit_id, model, usage_json) VALUES (?, ?, ?)")
+                let estimated_cost_usd = declaration.model.as_deref().and_then(|m| {
+                    conduit_core::cost::estimate_cost(declaration.provider, m, &declaration.usage)
+                });
+                sqlx::query("INSERT INTO usage (transit_id, model, usage_json, estimated_cost_usd) VALUES (?, ?, ?, ?)")
                     .bind(&transit_id)
                     .bind(&declaration.model)
                     .bind(&usage_json)
+                    .bind(estimated_cost_usd)
                     .execute(&mut *tx)
                     .await?;
             }
@@ -127,7 +132,7 @@ impl TransitStorage for SqliteTransitStorage {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json
+                                u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          WHERE i.stored_at > ?
@@ -143,7 +148,7 @@ impl TransitStorage for SqliteTransitStorage {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json
+                                u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          WHERE i.stored_at < ?
@@ -158,7 +163,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (None, Direction::After) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json
+                                u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          ORDER BY i.stored_at ASC
@@ -171,7 +176,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (None, Direction::Before) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json
+                                u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          ORDER BY i.stored_at DESC
@@ -215,7 +220,7 @@ impl TransitStorage for SqliteTransitStorage {
                 .join(",");
             let sql = format!(
                 "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                        u.model, u.usage_json
+                        u.model, u.usage_json, u.estimated_cost_usd
                  FROM identity i
                  LEFT JOIN usage u ON i.transit_id = u.transit_id
                  WHERE i.transit_id IN ({})
@@ -240,6 +245,7 @@ fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord>
     let body_id: Option<String> = row.get("body_id");
     let model: Option<String> = row.get("model");
     let usage_json: Option<String> = row.get("usage_json");
+    let estimated_cost_usd: Option<f64> = row.get("estimated_cost_usd");
     let Ok(provider) = provider_str.parse::<Provider>();
 
     // to keep the proxy process going, be loud about errors but don't panic
@@ -271,6 +277,7 @@ fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord>
         body_id,
         model,
         usage,
+        estimated_cost_usd,
     })
 }
 
@@ -313,6 +320,7 @@ mod tests {
             .iter()
             .map(|&transit_id| UsageDeclaration {
                 transit_id,
+                provider: Provider::OpenAI,
                 model: Some("test-model".into()),
                 usage: json!({"input_tokens": 10, "output_tokens": 20}),
             })
@@ -555,6 +563,7 @@ mod tests {
         storage
             .store_usages(vec![UsageDeclaration {
                 transit_id,
+                provider: Provider::OpenAI,
                 model: Some("gpt-4".into()),
                 usage: json!({"input_tokens": 100, "output_tokens": 50}),
             }])

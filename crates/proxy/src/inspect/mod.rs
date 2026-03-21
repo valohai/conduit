@@ -39,6 +39,7 @@ pub enum ReportPayload {
         body_id: Option<String>,
     },
     Usage {
+        provider: Provider,
         model: Option<String>,
         usage: Value,
     },
@@ -63,8 +64,12 @@ impl fmt::Display for ReportPayload {
                     "Identity({provider:?}, header={header_id:?}, body={body_id:?})"
                 )
             }
-            ReportPayload::Usage { model, usage } => {
-                write!(f, "Usage(model={model:?}, {usage})")
+            ReportPayload::Usage {
+                provider,
+                model,
+                usage,
+            } => {
+                write!(f, "Usage({provider:?}, model={model:?}, {usage})")
             }
         }
     }
@@ -99,9 +104,10 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
                             body_id,
                         });
                     }
-                    ReportPayload::Usage { model, usage } => {
+                    ReportPayload::Usage { provider, model, usage } => {
                         pending_usages.push(UsageDeclaration {
                             transit_id: report.transit_id,
+                            provider,
                             model,
                             usage,
                         });

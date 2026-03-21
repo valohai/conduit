@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::Provider;
 
+#[derive(Clone)]
 pub struct Storages {
     pub transit: Arc<dyn TransitStorage>,
 }

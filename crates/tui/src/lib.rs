@@ -66,6 +66,7 @@ struct App {
     is_loading_older: bool,
     transit_table_state: TableState,
     auto_follow: bool,
+    unseen_count: usize,
     use_relative_time: bool,
     transit_detail_scroll: u16,
     log_buffer: LogBuffer,
@@ -97,6 +98,7 @@ impl App {
             is_loading_older: false,
             transit_table_state: TableState::default(),
             auto_follow: true,
+            unseen_count: 0,
             use_relative_time: true,
             transit_detail_scroll: 0,
             log_buffer,
@@ -282,9 +284,22 @@ impl App {
             Constraint::Length(12),
             Constraint::Length(13),
         ];
+        let title = if self.unseen_count > 0 {
+            Line::from(vec![
+                Span::raw(" Requests "),
+                Span::styled(
+                    format!("↑ {} new (press f) ↑ ", self.unseen_count),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        } else {
+            Line::from(" Requests ")
+        };
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().title(" Requests ").borders(Borders::ALL))
+            .block(Block::default().title(title).borders(Borders::ALL))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         frame.render_stateful_widget(table, table_area, &mut self.transit_table_state);
@@ -435,6 +450,7 @@ impl App {
                     self.transit_table_state.select(Some(prev));
                     if prev == 0 {
                         self.auto_follow = true;
+                        self.unseen_count = 0;
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -450,6 +466,7 @@ impl App {
                     self.transit_table_state.select(Some(prev));
                     if prev == 0 {
                         self.auto_follow = true;
+                        self.unseen_count = 0;
                     }
                 }
                 KeyCode::PageDown => {
@@ -493,6 +510,7 @@ impl App {
                     self.transit_table_state.select(Some(prev));
                     if prev == 0 {
                         self.auto_follow = true;
+                        self.unseen_count = 0;
                     }
                 }
                 event::MouseEventKind::ScrollDown => {
@@ -646,6 +664,9 @@ impl App {
                         let new_record_count = new_records.len();
                         self.transit_records.splice(0..0, new_records);
                         let in_detail = matches!(self.view, View::TransitDetail(_));
+                        if !self.auto_follow || in_detail {
+                            self.unseen_count += new_record_count;
+                        }
                         if self.auto_follow && !in_detail {
                             self.select_first();
                         } else {
@@ -702,6 +723,7 @@ impl App {
     }
 
     fn select_first(&mut self) {
+        self.unseen_count = 0;
         if self.transit_records.is_empty() {
             self.transit_table_state.select(None);
         } else {

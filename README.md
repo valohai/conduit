@@ -1,4 +1,12 @@
-# ⚡️ Valohai Conduit
+# Valohai Conduit
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+A local proxy that sits between your code and LLM providers,
+recording billable usage. Point SDK's base URL at Conduit, and get detailed
+tracking with zero code changes.
+
+Single binary, written in Rust.
 
 ## Usage
 
@@ -13,66 +21,33 @@ conduit --help
 # TODO: document the configuration
 
 conduit
-# then you can already make requests through the proxy, try:
-# => http://127.0.0.1:8080/openai
-# => http://127.0.0.1:8080/anthropic/v1/messages
 ```
+
+**Once Conduit is running, point your SDK's base URL at it.**
+The URL is `http://<proxy-address>/<provider_key>` where `<provider_key>` matches
+a `[providers.<key>]` section in your `conduit.toml`.
+
+Set the base URL environment variable for your provider SDK:
+
+```shell
+# NB: OpenAI-like providers also need the `/v1` path suffix:
+export OPENAI_BASE_URL=http://localhost:8080/openai/v1
+export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```
+
+Most SDKs pick these up automatically — no code changes needed.
+
+Alternatively, pass `base_url` directly:
+
+```python
+client = OpenAI(base_url="http://localhost:8080/openai/v1")
+client = Anthropic(base_url="http://localhost:8080/anthropic")
+```
+
+See [`examples/`](examples/) for complete working examples.
 
 ## Development
 
-### Prerequisites
-
-- Rust version specified at `rust-toolchain.toml` / `mise.toml`
-- latest [prek](https://github.com/j178/prek) for pre-commit hooks
-- _(optional)_ [uv](https://github.com/uv/uv) for running Python examples to seed data
-
-```shell
-mise install          # installs Rust, prek and uv
-# or install Rust (rustup) manually: https://rust-lang.org/install
-# or install prek manually: https://prek.j178.dev/installation/
-# or install uv manually: https://docs.astral.sh/uv/getting-started/installation/
-```
-
-### Setup
-
-```shell
-prek install          # set up pre-commit hooks
-cargo run -- help     # verify it works
-```
-
-### Linting
-
-```shell
-prek --all-files
-# or separately:
-# cargo fmt
-# cargo clippy --workspace --tests
-```
-
-### Testing
-
-```shell
-cargo test --workspace
-```
-
-### Python Examples
-
-```shell
-# configure and run Conduit, e.g.:
-# cp conduit.example.toml conduit.toml
-# vim conduit.toml
-# cargo run -- -vv
-
-# while it's running, in a separate terminal:
-cd examples/
-cp .env.example .env
-vim .env
-uv run --env-file .env python/anthropic_messages.py
-uv run --env-file .env python/anthropic_messages_streaming.py
-uv run --env-file .env python/openai_chat_completions.py
-uv run --env-file .env python/openai_chat_completions_streaming.py
-uv run --env-file .env python/openai_completions.py
-uv run --env-file .env python/openai_completions_streaming.py
-uv run --env-file .env python/openai_responses.py
-uv run --env-file .env python/openai_responses_streaming.py
-```
+See the
+[contributing guide](https://github.com/valohai/conduit?tab=contributing-ov-file)
+to get started.

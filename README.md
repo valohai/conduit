@@ -39,8 +39,6 @@ mise install          # installs Rust, prek and uv
 # or install uv manually: https://docs.astral.sh/uv/getting-started/installation/
 ```
 
-### Setup
-
 ```shell
 prek install          # set up pre-commit hooks
 cargo run -- help     # verify it works
@@ -59,6 +57,25 @@ prek --all-files
 
 ```shell
 cargo test --workspace
+```
+
+### Running
+
+To run the proxy:
+
+```shell
+cp conduit.example.toml conduit.toml
+vim conduit.toml
+cargo run -- proxy
+```
+
+Then, while the proxy is running, you can run the examples documented further
+below to get tracking data.
+
+To run the terminal-based dashboard, in a separate terminal:
+
+```shell
+cargo run -- dashboard
 ```
 
 ### Python Examples

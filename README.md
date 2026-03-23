@@ -1,4 +1,10 @@
-# ⚡️ Valohai Conduit
+# Valohai Conduit
+
+A local proxy that sits between your code and LLM providers,
+recording billable usage. Point SDK's base URL at Conduit, and get detailed
+tracking with zero code changes.
+
+Single binary, written in Rust.
 
 ## Usage
 

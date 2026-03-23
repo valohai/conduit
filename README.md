@@ -1,5 +1,7 @@
 # Valohai Conduit
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A local proxy that sits between your code and LLM providers,
 recording billable usage. Point SDK's base URL at Conduit, and get detailed
 tracking with zero code changes.

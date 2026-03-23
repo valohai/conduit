@@ -21,10 +21,30 @@ conduit --help
 # TODO: document the configuration
 
 conduit
-# then you can already make requests through the proxy, try:
-# => http://127.0.0.1:8080/openai
-# => http://127.0.0.1:8080/anthropic/v1/messages
 ```
+
+**Once Conduit is running, point your SDK's base URL at it.**
+The URL is `http://<proxy-address>/<provider_key>` where `<provider_key>` matches
+a `[providers.<key>]` section in your `conduit.toml`.
+
+Set the base URL environment variable for your provider SDK:
+
+```shell
+# NB: OpenAI-like providers also need the `/v1` path suffix:
+export OPENAI_BASE_URL=http://localhost:8080/openai/v1
+export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```
+
+Most SDKs pick these up automatically — no code changes needed.
+
+Alternatively, pass `base_url` directly:
+
+```python
+client = OpenAI(base_url="http://localhost:8080/openai/v1")
+client = Anthropic(base_url="http://localhost:8080/anthropic")
+```
+
+See [`examples/`](examples/) for complete working examples.
 
 ## Development
 

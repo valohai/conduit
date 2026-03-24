@@ -111,6 +111,7 @@ async fn proxy_handler(
     };
 
     let mut upstream_request = state.http_client.request(parts.method, &upstream_url);
+    tracing::trace!(headers = ?parts.headers, "request headers");
     for (key, value) in &parts.headers {
         if STRIPPED_REQUEST_HEADERS.contains(&key.as_str()) {
             continue;
@@ -150,6 +151,7 @@ async fn proxy_handler(
     let up_res_headers = upstream_response.headers().clone();
     let up_body_stream = upstream_response.bytes_stream();
 
+    tracing::trace!(headers = ?up_res_headers, "response headers");
     for inspector in &mut inspectors {
         inspector.on_response(&up_res_headers);
     }

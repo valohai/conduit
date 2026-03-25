@@ -206,11 +206,10 @@ Once the basic setup works, try:
 
 A few good follow-up projects to route through Conduit:
 
-- Valohai RAG example: https://github.com/valohai/rag-doc-example
 - OpenAI Python examples: https://github.com/openai/openai-python/tree/main/examples
 - Anthropic Python SDK examples: https://github.com/anthropics/anthropic-sdk-python/tree/main/examples
+- Valohai RAG example: https://github.com/valohai/rag-doc-example
 - Vercel AI chatbot example: https://github.com/vercel/ai-chatbot
-- LangChain templates: https://github.com/langchain-ai/langchain/tree/master/templates
 
 ## One-line summary
 

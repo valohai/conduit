@@ -3,6 +3,12 @@ name = "conduit-storage"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
@@ -14,6 +20,3 @@ uuid.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-
-[lints]
-workspace = true

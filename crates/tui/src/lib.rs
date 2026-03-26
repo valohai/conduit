@@ -385,6 +385,19 @@ impl App {
             ]),
         ];
 
+        if let Some(ref vh) = record.vh_headers {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled("Valohai Headers:", label_style)));
+            let mut keys: Vec<_> = vh.keys().collect();
+            keys.sort();
+            for key in keys {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", key), label_style),
+                    Span::raw(vh[key].clone()),
+                ]));
+            }
+        }
+
         if let Some(ref usage) = record.usage {
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled("Full Usage:", label_style)));

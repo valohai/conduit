@@ -3,6 +3,12 @@ name = "conduit-tui"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
@@ -15,6 +21,3 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-
-[lints]
-workspace = true

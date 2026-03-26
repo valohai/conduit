@@ -3,6 +3,9 @@ name = "valohai-conduit"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "conduit"
 path = "src/main.rs"
@@ -17,6 +20,3 @@ conduit-tui.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[lints]
-workspace = true

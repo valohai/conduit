@@ -305,6 +305,7 @@ mod tests {
                     upstream: "http://127.0.0.1:1".into(),
                 },
             )]),
+            ..Config::default()
         };
         let app = build_router(&config, test_state());
 
@@ -338,6 +339,7 @@ mod tests_openai_chat_completions {
                     upstream: stub_upstream().await,
                 },
             )]),
+            ..Config::default()
         };
         build_router(&config, test_state())
     }

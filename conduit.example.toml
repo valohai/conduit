@@ -16,3 +16,7 @@ upstream = "https://api.anthropic.com"
 # Great for development!
 [providers.bin]
 upstream = "https://httpbin.org/"
+
+# uncomment and fill for https://llm.valohai.com/ integration:
+# [valohai-llm]
+# api_key = ""  # or via "VALOHAI_LLM_API_KEY" env var

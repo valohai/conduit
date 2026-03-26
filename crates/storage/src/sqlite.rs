@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -33,11 +34,17 @@ impl SqliteTransitStorage {
                 stored_at TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 header_id TEXT,
-                body_id TEXT
+                body_id TEXT,
+                vh_headers_json TEXT
             )",
         )
         .execute(&pool)
         .await?;
+
+        // ignores errors as the column might already exist
+        let _ = sqlx::query("ALTER TABLE identity ADD COLUMN vh_headers_json TEXT")
+            .execute(&pool)
+            .await;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_identity_stored_at
@@ -75,14 +82,27 @@ impl TransitStorage for SqliteTransitStorage {
                 let stored_at = format_timestamp(&now);
                 let transit_id = declaration.transit_id.to_string();
                 let provider = declaration.provider.to_string();
+                let vh_headers_json = declaration.vh_headers.as_ref().and_then(|h| {
+                    serde_json::to_string(h)
+                        .map_err(|e| {
+                            tracing::warn!(
+                                transit_id = %declaration.transit_id,
+                                error = %e,
+                                "failed to serialize vh_headers"
+                            );
+                        })
+                        .ok()
+                });
+
                 sqlx::query(
-                    "INSERT INTO identity (transit_id, stored_at, provider, header_id, body_id) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO identity (transit_id, stored_at, provider, header_id, body_id, vh_headers_json) VALUES (?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&transit_id)
                 .bind(&stored_at)
                 .bind(&provider)
                 .bind(&declaration.header_id)
                 .bind(&declaration.body_id)
+                .bind(&vh_headers_json)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -132,7 +152,7 @@ impl TransitStorage for SqliteTransitStorage {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json, u.estimated_cost_usd
+                                i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          WHERE i.stored_at > ?
@@ -148,7 +168,7 @@ impl TransitStorage for SqliteTransitStorage {
                     let stored_at = format_timestamp(cursor);
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json, u.estimated_cost_usd
+                                i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          WHERE i.stored_at < ?
@@ -163,7 +183,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (None, Direction::After) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json, u.estimated_cost_usd
+                                i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          ORDER BY i.stored_at ASC
@@ -176,7 +196,7 @@ impl TransitStorage for SqliteTransitStorage {
                 (None, Direction::Before) => {
                     sqlx::query(
                         "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                                u.model, u.usage_json, u.estimated_cost_usd
+                                i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
                          FROM identity i
                          LEFT JOIN usage u ON i.transit_id = u.transit_id
                          ORDER BY i.stored_at DESC
@@ -220,7 +240,7 @@ impl TransitStorage for SqliteTransitStorage {
                 .join(",");
             let sql = format!(
                 "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
-                        u.model, u.usage_json, u.estimated_cost_usd
+                        i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
                  FROM identity i
                  LEFT JOIN usage u ON i.transit_id = u.transit_id
                  WHERE i.transit_id IN ({})
@@ -243,6 +263,7 @@ fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord>
     let provider_str: String = row.get("provider");
     let header_id: Option<String> = row.get("header_id");
     let body_id: Option<String> = row.get("body_id");
+    let vh_headers_json: Option<String> = row.get("vh_headers_json");
     let model: Option<String> = row.get("model");
     let usage_json: Option<String> = row.get("usage_json");
     let estimated_cost_usd: Option<f64> = row.get("estimated_cost_usd");
@@ -257,6 +278,16 @@ fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord>
     let Ok(stored_at) = stored_at.parse::<chrono::DateTime<chrono::Utc>>() else {
         tracing::warn!(%transit_id, stored_at, "invalid timestamp in transit record");
         return None;
+    };
+    let vh_headers: Option<HashMap<String, String>> = match vh_headers_json {
+        Some(j) => match serde_json::from_str(&j) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(%transit_id, error = %e, "invalid vh_headers JSON in transit record");
+                None
+            }
+        },
+        None => None,
     };
     let usage = match usage_json {
         Some(j) => match serde_json::from_str(&j) {
@@ -275,6 +306,7 @@ fn row_to_transit_record(row: &sqlx::sqlite::SqliteRow) -> Option<TransitRecord>
         provider,
         header_id,
         body_id,
+        vh_headers,
         model,
         usage,
         estimated_cost_usd,
@@ -308,6 +340,7 @@ mod tests {
                 provider: Provider::OpenAI,
                 header_id: Some("req-123".into()),
                 body_id: Some("chatcmpl-test".into()),
+                vh_headers: None,
             })
             .collect();
         let transit_ids: Vec<_> = identity_declarations.iter().map(|d| d.transit_id).collect();
@@ -469,6 +502,7 @@ mod tests {
                 provider: Provider::default(),
                 header_id: Some("req-abc".into()),
                 body_id: None,
+                vh_headers: None,
             }])
             .await
             .unwrap();
@@ -502,6 +536,7 @@ mod tests {
                 provider: Provider::default(),
                 header_id: None,
                 body_id: Some("late".into()),
+                vh_headers: None,
             }])
             .await
             .unwrap();
@@ -523,6 +558,7 @@ mod tests {
                 provider: Provider::default(),
                 header_id: None,
                 body_id: Some("early".into()),
+                vh_headers: None,
             }])
             .await
             .unwrap();
@@ -550,6 +586,7 @@ mod tests {
                 provider: Provider::OpenAI,
                 header_id: Some("req-abc".into()),
                 body_id: None,
+                vh_headers: None,
             }])
             .await
             .unwrap();
@@ -585,5 +622,51 @@ mod tests {
         let storage = test_storage().await;
         let records = storage.get_transits(vec![]).await.unwrap();
         assert!(records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vh_headers_round_trip() {
+        let storage = test_storage().await;
+
+        let transit_id = Uuid::now_v7();
+        let vh_headers = HashMap::from([
+            ("x-vh-run-id".to_string(), "run-123".to_string()),
+            ("x-vh-trace-id".to_string(), "trace-abc".to_string()),
+        ]);
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id,
+                provider: Provider::OpenAI,
+                header_id: None,
+                body_id: None,
+                vh_headers: Some(vh_headers.clone()),
+            }])
+            .await
+            .unwrap();
+
+        let records = storage.get_transits(vec![transit_id]).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].vh_headers, Some(vh_headers));
+    }
+
+    #[tokio::test]
+    async fn vh_headers_none_stored_as_null() {
+        let storage = test_storage().await;
+
+        let transit_id = Uuid::now_v7();
+        storage
+            .store_identities(vec![IdentityDeclaration {
+                transit_id,
+                provider: Provider::OpenAI,
+                header_id: Some("req-abc".into()),
+                body_id: None,
+                vh_headers: None,
+            }])
+            .await
+            .unwrap();
+
+        let records = storage.get_transits(vec![transit_id]).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].vh_headers, None);
     }
 }

@@ -8,6 +8,8 @@ use std::fmt;
 use std::pin::pin;
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 use conduit_core::{IdentityDeclaration, Provider, Storages, UsageDeclaration};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -37,6 +39,7 @@ pub enum ReportPayload {
         provider: Provider,
         header_id: Option<String>,
         body_id: Option<String>,
+        vh_headers: Option<HashMap<String, String>>,
     },
     Usage {
         provider: Provider,
@@ -58,10 +61,11 @@ impl fmt::Display for ReportPayload {
                 provider,
                 header_id,
                 body_id,
+                vh_headers,
             } => {
                 write!(
                     f,
-                    "Identity({provider:?}, header={header_id:?}, body={body_id:?})"
+                    "Identity({provider:?}, header={header_id:?}, body={body_id:?}, vh={vh_headers:?})"
                 )
             }
             ReportPayload::Usage {
@@ -96,12 +100,13 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
                 };
 
                 match report.payload {
-                    ReportPayload::Identity { provider, header_id, body_id } => {
+                    ReportPayload::Identity { provider, header_id, body_id, vh_headers } => {
                         pending_identities.push(IdentityDeclaration {
                             transit_id: report.transit_id,
                             provider,
                             header_id,
                             body_id,
+                            vh_headers,
                         });
                     }
                     ReportPayload::Usage { provider, model, usage } => {

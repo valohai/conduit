@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::pin::Pin;
@@ -40,6 +41,7 @@ pub struct IdentityDeclaration {
     pub provider: Provider,
     pub header_id: Option<String>,
     pub body_id: Option<String>,
+    pub vh_headers: Option<HashMap<String, String>>,
 }
 
 pub struct UsageDeclaration {
@@ -53,8 +55,9 @@ pub struct TransitRecord {
     pub transit_id: Uuid,
     pub stored_at: chrono::DateTime<chrono::Utc>,
     pub provider: Provider,
-    pub header_id: Option<String>, // LLM provider's identifier from the response header i.e. "debugging id"
+    pub header_id: Option<String>, // LLM provider's identifier from the response headers i.e. "debugging id"
     pub body_id: Option<String>, // LLM provider's identifier from the response body i.e. "correlation id"
+    pub vh_headers: Option<HashMap<String, String>>, // "X-VH-" headers from the request
     pub model: Option<String>,
     pub usage: Option<Value>,
     pub estimated_cost_usd: Option<f64>,

@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use bytes::Bytes;
-use conduit_core::{Config, Provider, ProviderConfig, Storages};
+use conduit_core::{Config, Provider, Storages};
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -40,6 +40,7 @@ pub struct AppState {
 
 struct ProviderContext {
     name: String,
+    path_prefix: String,
     upstream: String,
 }
 
@@ -69,26 +70,25 @@ pub fn build_router(config: &Config, state: Arc<AppState>) -> Router {
     let mut router = Router::new().route("/health", get(health));
 
     for (provider_map_key, provider_config) in &config.providers {
+        let ctx = ProviderContext {
+            name: provider_map_key.to_string(),
+            path_prefix: format!("/{provider_map_key}"),
+            upstream: provider_config.upstream.clone(),
+        };
+        tracing::debug!(
+            "provider {provider_map_key}: http://{listen}{path_prefix}",
+            listen = config.listen,
+            path_prefix = ctx.path_prefix,
+        );
         router = router.nest(
-            &format!("/{provider_map_key}"),
-            provider_router(provider_map_key, provider_config),
+            &ctx.path_prefix.clone(),
+            Router::new()
+                .fallback(any(proxy_handler))
+                .layer(Extension(Arc::new(ctx))),
         );
     }
 
     router.with_state(state)
-}
-
-fn provider_router(
-    provider_map_key: &str,
-    provider_config: &ProviderConfig,
-) -> Router<Arc<AppState>> {
-    let ctx = ProviderContext {
-        name: provider_map_key.to_string(),
-        upstream: provider_config.upstream.clone(),
-    };
-    Router::new()
-        .fallback(any(proxy_handler))
-        .layer(Extension(Arc::new(ctx)))
 }
 
 async fn proxy_handler(
@@ -262,6 +262,7 @@ mod tests {
     use crate::testutil::test_state;
     use axum::body::Body;
     use axum::extract::Request;
+    use conduit_core::ProviderConfig;
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
@@ -322,6 +323,7 @@ mod tests_openai_chat_completions {
     use crate::testutil::test_state;
     use axum::body::Body;
     use axum::extract::Request;
+    use conduit_core::ProviderConfig;
     use http_body_util::BodyExt;
     use serde_json::json;
     use std::collections::HashMap;

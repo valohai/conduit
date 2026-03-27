@@ -1,5 +1,7 @@
 mod frame;
 mod inspect;
+mod sync;
+mod sync_notify;
 
 use std::sync::Arc;
 
@@ -22,6 +24,7 @@ use uuid::Uuid;
 
 use crate::frame::Framer;
 use crate::inspect::{IdentityInspector, Inspector, Report, UsageInspector, report_processor};
+use crate::sync_notify::SyncCheckNotify;
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -49,7 +52,23 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
         anyhow::bail!("No providers specified, gateway will not be functional.");
     }
     let (report_tx, report_rx) = mpsc::unbounded_channel();
-    tokio::spawn(report_processor(report_rx, storages));
+    let sync_notify = SyncCheckNotify::new();
+    tokio::spawn(report_processor(
+        report_rx,
+        storages.clone(),
+        sync_notify.clone(),
+    ));
+
+    if config.valohai_llm.enabled() {
+        let config_for_sync = config.clone();
+        let http_client_for_sync = reqwest::Client::new();
+        tokio::spawn(sync::valohai_llm_poster(
+            storages,
+            config_for_sync,
+            http_client_for_sync,
+            sync_notify,
+        ));
+    }
 
     let state = Arc::new(AppState {
         http_client: reqwest::Client::builder()

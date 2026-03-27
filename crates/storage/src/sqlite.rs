@@ -34,15 +34,17 @@ impl SqliteTransitStorage {
                 stored_at TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 header_id TEXT,
-                body_id TEXT,
-                vh_headers_json TEXT
+                body_id TEXT
             )",
         )
         .execute(&pool)
         .await?;
 
-        // ignores errors as the column might already exist
+        // ignores errors as the columns might already exist
         let _ = sqlx::query("ALTER TABLE identity ADD COLUMN vh_headers_json TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE identity ADD COLUMN sent_at TEXT")
             .execute(&pool)
             .await;
 
@@ -253,6 +255,64 @@ impl TransitStorage for SqliteTransitStorage {
             }
             let rows = query.fetch_all(&self.pool).await?;
             Ok(rows.iter().filter_map(row_to_transit_record).collect())
+        })
+    }
+
+    fn list_unsent(
+        &self,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+        Box::pin(async move {
+            // - inner join ensures that the transit record is complete i.e. has usage
+            // - only sends records that have some X-VH- headers, otherwise Valohai LLM
+            //   has no chance of linking the usages to Results
+            let rows = sqlx::query(
+                "SELECT i.transit_id, i.stored_at, i.provider, i.header_id, i.body_id,
+                        i.vh_headers_json, u.model, u.usage_json, u.estimated_cost_usd
+                 FROM identity i
+                 INNER JOIN usage u ON i.transit_id = u.transit_id
+                 WHERE i.sent_at IS NULL
+                   AND i.vh_headers_json IS NOT NULL
+                   AND i.vh_headers_json != ''
+                 ORDER BY i.stored_at ASC
+                 LIMIT ?",
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows.iter().filter_map(row_to_transit_record).collect())
+        })
+    }
+
+    fn mark_sent(
+        &self,
+        transit_ids: Vec<Uuid>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            if transit_ids.is_empty() {
+                return Ok(());
+            }
+
+            let placeholders = transit_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "UPDATE identity SET sent_at = ? WHERE transit_id IN ({})",
+                placeholders
+            );
+
+            let now = format_timestamp(&chrono::Utc::now());
+            let mut query = sqlx::query(&sql).bind(&now);
+            for id in &transit_ids {
+                query = query.bind(id.to_string());
+            }
+            query.execute(&self.pool).await?;
+
+            tracing::debug!(count = transit_ids.len(), "marked transit records as sent");
+            Ok(())
         })
     }
 }
@@ -647,6 +707,119 @@ mod tests {
         let records = storage.get_transits(vec![transit_id]).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].vh_headers, Some(vh_headers));
+    }
+
+    fn some_vh_headers() -> Option<HashMap<String, String>> {
+        Some(HashMap::from([(
+            "x-vh-run-id".to_string(),
+            "run-1".to_string(),
+        )]))
+    }
+
+    #[tokio::test]
+    async fn list_unsent_complete_requires_usage_and_vh_headers() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+
+        let with_both = Uuid::now_v7();
+        let no_usage = Uuid::now_v7();
+        let no_vh = Uuid::now_v7();
+
+        storage
+            .store_identities(vec![
+                IdentityDeclaration {
+                    transit_id: with_both,
+                    provider: Provider::OpenAI,
+                    header_id: Some("req-1".into()),
+                    body_id: None,
+                    vh_headers: some_vh_headers(),
+                },
+                IdentityDeclaration {
+                    transit_id: no_usage,
+                    provider: Provider::OpenAI,
+                    header_id: Some("req-2".into()),
+                    body_id: None,
+                    vh_headers: some_vh_headers(),
+                },
+                IdentityDeclaration {
+                    transit_id: no_vh,
+                    provider: Provider::OpenAI,
+                    header_id: Some("req-3".into()),
+                    body_id: None,
+                    vh_headers: None,
+                },
+            ])
+            .await?;
+
+        storage
+            .store_usages(vec![
+                UsageDeclaration {
+                    transit_id: with_both,
+                    provider: Provider::OpenAI,
+                    model: Some("gpt-4".into()),
+                    usage: json!({"input_tokens": 10}),
+                },
+                UsageDeclaration {
+                    transit_id: no_vh,
+                    provider: Provider::OpenAI,
+                    model: Some("gpt-4".into()),
+                    usage: json!({"input_tokens": 10}),
+                },
+            ])
+            .await?;
+
+        let unsent = storage.list_unsent(10).await?;
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].transit_id, with_both);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mark_sent_excludes_from_unsent() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+
+        let ids: Vec<Uuid> = (0..3).map(|_| Uuid::now_v7()).collect();
+        storage
+            .store_identities(
+                ids.iter()
+                    .map(|&id| IdentityDeclaration {
+                        transit_id: id,
+                        provider: Provider::OpenAI,
+                        header_id: None,
+                        body_id: None,
+                        vh_headers: some_vh_headers(),
+                    })
+                    .collect(),
+            )
+            .await?;
+        storage
+            .store_usages(
+                ids.iter()
+                    .map(|&id| UsageDeclaration {
+                        transit_id: id,
+                        provider: Provider::OpenAI,
+                        model: Some("gpt-4".into()),
+                        usage: json!({"input_tokens": 10}),
+                    })
+                    .collect(),
+            )
+            .await?;
+
+        let unsent = storage.list_unsent(10).await?;
+        assert_eq!(unsent.len(), 3);
+
+        storage.mark_sent(vec![ids[0], ids[1]]).await?;
+
+        let unsent = storage.list_unsent(10).await?;
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].transit_id, ids[2]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mark_sent_empty_is_noop() -> anyhow::Result<()> {
+        let storage = test_storage().await;
+        storage.mark_sent(vec![]).await?;
+        Ok(())
     }
 
     #[tokio::test]

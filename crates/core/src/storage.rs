@@ -34,6 +34,16 @@ pub trait TransitStorage: Send + Sync {
         &self,
         transit_ids: Vec<Uuid>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>>;
+
+    fn list_unsent(
+        &self,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>>;
+
+    fn mark_sent(
+        &self,
+        transit_ids: Vec<Uuid>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 }
 
 pub struct IdentityDeclaration {

@@ -19,6 +19,7 @@ use uuid::Uuid;
 use axum::http::HeaderMap;
 
 use crate::frame::Frame;
+use crate::sync_notify::SyncCheckNotify;
 
 pub trait Inspector: Send {
     fn on_request(&mut self, _headers: &HeaderMap, _body_json: Option<&Value>) {}
@@ -82,7 +83,11 @@ impl fmt::Display for ReportPayload {
 const BATCH_SIZE: usize = 64;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
-pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages: Storages) {
+pub async fn report_processor(
+    mut rx: mpsc::UnboundedReceiver<Report>,
+    storages: Storages,
+    sync_notify: SyncCheckNotify,
+) {
     let mut identity_deadline = pin!(sleep(FLUSH_INTERVAL));
     let mut pending_identities: Vec<IdentityDeclaration> = Vec::with_capacity(BATCH_SIZE);
 
@@ -121,10 +126,12 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
 
                 if pending_identities.len() >= BATCH_SIZE {
                     take_and_store_identities(&mut pending_identities, &storages).await;
+                    sync_notify.notify();
                     identity_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
                 }
                 if pending_usages.len() >= BATCH_SIZE {
                     take_and_store_usages(&mut pending_usages, &storages).await;
+                    sync_notify.notify();
                     usage_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
                 }
             }
@@ -133,10 +140,12 @@ pub async fn report_processor(mut rx: mpsc::UnboundedReceiver<Report>, storages:
 
             _ = &mut identity_deadline => {
                 take_and_store_identities(&mut pending_identities, &storages).await;
+                sync_notify.notify();
                 identity_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
             }
             _ = &mut usage_deadline => {
                 take_and_store_usages(&mut pending_usages, &storages).await;
+                sync_notify.notify();
                 usage_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
             }
         }

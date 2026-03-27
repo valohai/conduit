@@ -1,5 +1,6 @@
 mod json_highlight;
 pub mod logging;
+pub mod theme;
 
 use std::collections::HashSet;
 use std::io;
@@ -13,13 +14,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use logging::LogBuffer;
 use ratatui::Terminal;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    TableState,
+    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, TableState,
 };
+use theme::Theme;
 use uuid::Uuid;
 
 enum View {
@@ -27,7 +28,18 @@ enum View {
     TransitDetail(usize),
 }
 
-pub fn start(config: Config, storages: Storages, log_buffer: LogBuffer) -> anyhow::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMenu {
+    File,
+    Help,
+}
+
+pub fn start(
+    config: Config,
+    storages: Storages,
+    log_buffer: LogBuffer,
+    theme: Theme,
+) -> anyhow::Result<()> {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |phi| {
         restore_terminal();
@@ -39,7 +51,7 @@ pub fn start(config: Config, storages: Storages, log_buffer: LogBuffer) -> anyho
     io::stdout().execute(crossterm::event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App::new(config, storages, log_buffer);
+    let mut app = App::new(config, storages, log_buffer, theme);
     let result = app.run(&mut terminal);
     restore_terminal();
 
@@ -56,6 +68,7 @@ fn restore_terminal() {
 struct App {
     _config: Config,
     storages: Storages,
+    theme: Theme,
     should_quit: bool,
     view: View,
     transit_records: Vec<TransitRecord>,
@@ -70,15 +83,19 @@ struct App {
     use_relative_time: bool,
     transit_detail_scroll: u16,
     log_buffer: LogBuffer,
-    log_area: ratatui::layout::Rect,
+    log_area: Rect,
     mouse_position: (u16, u16),
+    open_menu: Option<OpenMenu>,
+    show_about: bool,
+    menubar_area: Rect,
+    tick: u64,
     poll_tx: mpsc::Sender<PollMessage>,
     poll_rx: mpsc::Receiver<PollMessage>,
     poll_abort: tokio::task::AbortHandle,
 }
 
 impl App {
-    fn new(_config: Config, storages: Storages, log_buffer: LogBuffer) -> Self {
+    fn new(_config: Config, storages: Storages, log_buffer: LogBuffer, theme: Theme) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let handle = tokio::runtime::Handle::current();
@@ -89,6 +106,7 @@ impl App {
         Self {
             _config,
             storages,
+            theme,
             should_quit: false,
             view: View::TransitListing,
             transit_records: Vec::new(),
@@ -102,8 +120,12 @@ impl App {
             use_relative_time: true,
             transit_detail_scroll: 0,
             log_buffer,
-            log_area: ratatui::layout::Rect::ZERO,
+            log_area: Rect::ZERO,
             mouse_position: (0, 0),
+            open_menu: None,
+            show_about: false,
+            menubar_area: Rect::ZERO,
+            tick: 0,
             is_loading_newer: true,
             poll_tx,
             poll_rx: rx,
@@ -114,6 +136,7 @@ impl App {
     fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         while !self.should_quit {
             self.process_poll_messages();
+            self.tick = self.tick.wrapping_add(1);
             terminal.draw(|frame| self.render(frame))?;
             self.handle_events()?;
         }
@@ -122,6 +145,14 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
+        // Paint the base style (background) across the whole frame
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(self.theme.base), area);
+
+        let has_menubar = self.theme.menubar.is_some();
+        let menubar_height = if has_menubar { 1 } else { 0 };
+
         let log_lines: Vec<String> = self
             .log_buffer
             .lock()
@@ -134,9 +165,20 @@ impl App {
             log_lines.len() as u16 + 2 // +2 for the borders
         };
 
-        let [content_area, log_area] =
-            Layout::vertical([Constraint::Min(5), Constraint::Length(log_height)])
-                .areas(frame.area());
+        let chunks = Layout::vertical([
+            Constraint::Length(menubar_height),
+            Constraint::Min(5),
+            Constraint::Length(log_height),
+        ])
+        .split(area);
+        let menubar_area = chunks[0];
+        let content_area = chunks[1];
+        let log_area = chunks[2];
+
+        self.menubar_area = menubar_area;
+        if has_menubar {
+            self.render_menubar(frame, menubar_area);
+        }
 
         match self.view {
             View::TransitListing => self.render_transit_listing(frame, content_area),
@@ -145,6 +187,14 @@ impl App {
 
         self.log_area = log_area;
         self.render_log_panel(frame, log_area, log_lines);
+
+        // Render menu dropdowns and about dialog on top of everything
+        if has_menubar {
+            self.render_menu_dropdowns(frame, menubar_area);
+        }
+        if self.show_about {
+            self.render_about_dialog(frame, area);
+        }
     }
 
     fn render_log_panel(
@@ -157,19 +207,20 @@ impl App {
             return;
         }
 
+        let theme = &self.theme;
         let log_text: Vec<Line> = log_lines
             .into_iter()
             .map(|line| {
                 let style = if line.contains(" ERROR ") {
-                    Style::default().fg(Color::Red)
+                    theme.log_error
                 } else if line.contains(" WARN ") {
-                    Style::default().fg(Color::Yellow)
+                    theme.log_warn
                 } else if line.contains(" INFO ") {
-                    Style::default().fg(Color::LightBlue)
+                    theme.log_info
                 } else if line.contains(" DEBUG ") {
-                    Style::default().fg(Color::Gray)
+                    theme.log_debug
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    theme.log_other
                 };
                 Line::styled(line, style)
             })
@@ -179,11 +230,9 @@ impl App {
         let skip = log_text.len().saturating_sub(visible);
 
         let clear_button_style = if self.is_log_close_hover() {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            theme.log_close_hover
         } else {
-            Style::default().fg(Color::DarkGray)
+            theme.log_close_normal
         };
         let log_widget = Paragraph::new(log_text.into_iter().skip(skip).collect::<Vec<_>>()).block(
             Block::default()
@@ -192,15 +241,182 @@ impl App {
                     Span::styled("[ x to clear ]", clear_button_style),
                     Span::raw(" "),
                 ]))
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(theme.border)
+                .title_style(theme.title)
+                .title_alignment(theme.title_alignment),
         );
 
         frame.render_widget(log_widget, area);
     }
 
+    /// X position of the " Help" label on the menubar (right-aligned).
+    fn help_menu_x(&self) -> u16 {
+        // " Help " is 6 chars, pinned to right edge
+        self.menubar_area.x + self.menubar_area.width.saturating_sub(HELP_LABEL_WIDTH)
+    }
+
+    fn render_menubar(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let style = self.theme.menubar.unwrap_or(self.theme.base);
+        let hotkey = self.theme.menubar_hotkey;
+        let sel = self.theme.menubar_selected;
+
+        // Fill the bar
+        let bar = Paragraph::new("").style(style);
+        frame.render_widget(bar, area);
+
+        let file_style = if self.open_menu == Some(OpenMenu::File) {
+            sel
+        } else {
+            style
+        };
+        let file_hotkey = if self.open_menu == Some(OpenMenu::File) {
+            sel
+        } else {
+            hotkey
+        };
+
+        // " File" on the left
+        let file_spans = Line::from(vec![
+            Span::styled(" ", file_style),
+            Span::styled("F", file_hotkey),
+            Span::styled("ile", file_style),
+            Span::styled(" ", file_style),
+        ]);
+        let file_area = Rect::new(area.x, area.y, FILE_LABEL_WIDTH, 1);
+        frame.render_widget(Paragraph::new(file_spans), file_area);
+
+        // " Help " on the right
+        let help_style = if self.open_menu == Some(OpenMenu::Help) {
+            sel
+        } else {
+            style
+        };
+        let help_hotkey = if self.open_menu == Some(OpenMenu::Help) {
+            sel
+        } else {
+            hotkey
+        };
+
+        let help_x = self.help_menu_x();
+        let help_spans = Line::from(vec![
+            Span::styled(" ", help_style),
+            Span::styled("H", help_hotkey),
+            Span::styled("elp", help_style),
+            Span::styled(" ", help_style),
+        ]);
+        let help_area = Rect::new(help_x, area.y, HELP_LABEL_WIDTH, 1);
+        frame.render_widget(Paragraph::new(help_spans), help_area);
+
+        // Animated decoration in the center-right (between menus)
+        let (decoration, dec_width) = self.theme.menubar_decoration.frame(self.tick);
+        if dec_width > 0 {
+            let dec_style = self.theme.menubar_decoration_style;
+            let avail_start = area.x + FILE_LABEL_WIDTH;
+            let avail_end = help_x;
+            if avail_end > avail_start + dec_width {
+                // Center it in the available space
+                let mid = avail_start + (avail_end - avail_start - dec_width) / 2;
+                let dec_area = Rect::new(mid, area.y, dec_width, 1);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(decoration, dec_style)),
+                    dec_area,
+                );
+            }
+        }
+    }
+
+    fn render_menu_dropdowns(&self, frame: &mut ratatui::Frame, menubar_area: Rect) {
+        let style = self.theme.menu_dropdown;
+        let sel = self.theme.menu_dropdown_selected;
+
+        match self.open_menu {
+            Some(OpenMenu::File) => {
+                // Dropdown below " File" (x=1)
+                let drop = Rect::new(
+                    menubar_area.x,
+                    menubar_area.y + 1,
+                    12, // " Quit  Alt+Q"
+                    3,  // top border + item + bottom border
+                );
+                let is_hover = self.menu_dropdown_hover(drop) == Some(0);
+                let item_style = if is_hover { sel } else { style };
+                let block = Block::default().borders(Borders::ALL).style(style);
+                frame.render_widget(Clear, drop);
+                frame.render_widget(block, drop);
+                let item_area = Rect::new(drop.x + 1, drop.y + 1, drop.width - 2, 1);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(" Quit    ", item_style)])),
+                    item_area,
+                );
+            }
+            Some(OpenMenu::Help) => {
+                // Dropdown below " Help" (right-aligned)
+                let help_x = self.help_menu_x();
+                let drop_x = help_x.saturating_sub(12 - HELP_LABEL_WIDTH);
+                let drop = Rect::new(drop_x, menubar_area.y + 1, 12, 3);
+                let is_hover = self.menu_dropdown_hover(drop) == Some(0);
+                let item_style = if is_hover { sel } else { style };
+                let block = Block::default().borders(Borders::ALL).style(style);
+                frame.render_widget(Clear, drop);
+                frame.render_widget(block, drop);
+                let item_area = Rect::new(drop.x + 1, drop.y + 1, drop.width - 2, 1);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(" About   ", item_style)])),
+                    item_area,
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn render_about_dialog(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let w = 40u16;
+        let h = 7u16;
+        let x = area.x + area.width.saturating_sub(w) / 2;
+        let y = area.y + area.height.saturating_sub(h) / 2;
+        let dialog = Rect::new(x, y, w.min(area.width), h.min(area.height));
+
+        let style = self.theme.menu_dropdown;
+        let title_style = self.theme.title;
+
+        frame.render_widget(Clear, dialog);
+        let text = vec![
+            Line::raw(""),
+            Line::from("Conduit").alignment(Alignment::Center),
+            Line::raw(""),
+            Line::from("API Transit Dashboard").alignment(Alignment::Center),
+            Line::from("Press any key to close").alignment(Alignment::Center),
+        ];
+        let block = Block::default()
+            .title(" About ")
+            .title_alignment(Alignment::Center)
+            .title_style(title_style)
+            .borders(Borders::ALL)
+            .style(style);
+        frame.render_widget(Paragraph::new(text).block(block), dialog);
+    }
+
+    /// Returns which item index (0-based) the mouse is hovering over inside a dropdown.
+    fn menu_dropdown_hover(&self, drop: Rect) -> Option<usize> {
+        let (mx, my) = self.mouse_position;
+        // Items start at drop.y + 1 (after top border), inside drop.x+1..drop.x+w-1
+        if mx > drop.x
+            && mx < drop.x + drop.width - 1
+            && my > drop.y
+            && my < drop.y + drop.height - 1
+        {
+            Some((my - drop.y - 1) as usize)
+        } else {
+            None
+        }
+    }
+
     fn render_transit_listing(&mut self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
         let [table_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(area);
+
+        let theme = &self.theme;
 
         let header = Row::new(vec![
             Cell::from("Time"),
@@ -210,11 +426,7 @@ impl App {
             Cell::from("Input Tokens"),
             Cell::from("Output Tokens"),
         ])
-        .style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Cyan),
-        );
+        .style(theme.table_header);
 
         let mut rows: Vec<Row> = self
             .transit_records
@@ -268,11 +480,7 @@ impl App {
 
         if self.is_loading_newer {
             rows.push(
-                Row::new(vec![Cell::from(""), Cell::from("Loading...")]).style(
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                ),
+                Row::new(vec![Cell::from(""), Cell::from("Loading...")]).style(theme.loading),
             );
         }
 
@@ -288,10 +496,10 @@ impl App {
             Line::from(vec![
                 Span::raw(" Requests "),
                 Span::styled(
-                    format!("↑ {} new (press f) ↑ ", self.unseen_count),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    theme
+                        .unseen_badge_fmt
+                        .replace("{}", &self.unseen_count.to_string()),
+                    theme.unseen_badge,
                 ),
             ])
         } else {
@@ -299,8 +507,15 @@ impl App {
         };
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(theme.border)
+                    .title_style(theme.title)
+                    .title_alignment(theme.title_alignment),
+            )
+            .row_highlight_style(theme.row_highlight);
 
         frame.render_stateful_widget(table, table_area, &mut self.transit_table_state);
 
@@ -321,8 +536,7 @@ impl App {
             },
         );
 
-        let status_style = Style::default().fg(Color::DarkGray);
-        frame.render_widget(Paragraph::new(status).style(status_style), status_area);
+        frame.render_widget(Paragraph::new(status).style(theme.status), status_area);
     }
 
     fn visible_table_rows(&self, area_height: u16) -> usize {
@@ -338,11 +552,10 @@ impl App {
         let [content_area, status_area] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).areas(area);
 
+        let theme = &self.theme;
         let record = &self.transit_records[index];
 
-        let label_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
+        let label_style = theme.label;
 
         let mut lines = vec![
             Line::from(vec![
@@ -401,7 +614,7 @@ impl App {
         if let Some(ref usage) = record.usage {
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled("Full Usage:", label_style)));
-            lines.extend(json_highlight::json_to_lines(usage));
+            lines.extend(json_highlight::json_to_lines(usage, theme));
         }
 
         let content_len = lines.len();
@@ -412,7 +625,10 @@ impl App {
             .block(
                 Block::default()
                     .title(" Request Details ")
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .border_style(theme.border)
+                    .title_style(theme.title)
+                    .title_alignment(theme.title_alignment),
             )
             .scroll((self.transit_detail_scroll, 0));
         frame.render_widget(detail, content_area);
@@ -427,10 +643,7 @@ impl App {
             "{}| Backspace/Left/h: back, Up/Down: scroll, [: previvous, ]: next",
             position,
         );
-        frame.render_widget(
-            Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
-            status_area,
-        );
+        frame.render_widget(Paragraph::new(status).style(theme.status), status_area);
     }
 
     fn handle_events(&mut self) -> anyhow::Result<()> {
@@ -439,12 +652,172 @@ impl App {
             if let Event::Mouse(mouse) = &ev {
                 self.mouse_position = (mouse.column, mouse.row);
             }
+
+            // About dialog eats all input
+            if self.show_about {
+                if matches!(ev, Event::Key(key) if key.kind == KeyEventKind::Press)
+                    || matches!(ev, Event::Mouse(m) if m.kind == event::MouseEventKind::Down(event::MouseButton::Left))
+                {
+                    self.show_about = false;
+                }
+                return Ok(());
+            }
+
+            // Menu bar events (when a menu is open or Alt shortcuts)
+            if self.handle_menu_events(&ev)? {
+                return Ok(());
+            }
+
             match self.view {
                 View::TransitListing => self.handle_listing_events(ev)?,
                 View::TransitDetail(_) => self.handle_detail_events(ev)?,
             }
         }
         Ok(())
+    }
+
+    /// Handle menu-related events. Returns true if the event was consumed.
+    fn handle_menu_events(&mut self, ev: &Event) -> anyhow::Result<bool> {
+        let has_menubar = self.theme.menubar.is_some();
+
+        // Alt+F / Alt+H to open menus
+        if let Event::Key(key) = ev
+            && key.kind == KeyEventKind::Press
+            && has_menubar
+        {
+            if key.modifiers.contains(event::KeyModifiers::ALT) {
+                match key.code {
+                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                        self.open_menu = if self.open_menu == Some(OpenMenu::File) {
+                            None
+                        } else {
+                            Some(OpenMenu::File)
+                        };
+                        return Ok(true);
+                    }
+                    KeyCode::Char('h') | KeyCode::Char('H') => {
+                        self.open_menu = if self.open_menu == Some(OpenMenu::Help) {
+                            None
+                        } else {
+                            Some(OpenMenu::Help)
+                        };
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+            }
+
+            // When a menu is open, handle navigation
+            if self.open_menu.is_some() {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.open_menu = None;
+                        return Ok(true);
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        self.open_menu = Some(match self.open_menu {
+                            Some(OpenMenu::File) => OpenMenu::Help,
+                            _ => OpenMenu::File,
+                        });
+                        return Ok(true);
+                    }
+                    KeyCode::Enter => {
+                        match self.open_menu {
+                            Some(OpenMenu::File) => self.should_quit = true,
+                            Some(OpenMenu::Help) => {
+                                self.show_about = true;
+                                self.open_menu = None;
+                            }
+                            None => {}
+                        }
+                        return Ok(true);
+                    }
+                    _ => {
+                        self.open_menu = None;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        // Mouse clicks on the menu bar and dropdowns
+        if let Event::Mouse(mouse) = ev {
+            if mouse.kind == event::MouseEventKind::Down(event::MouseButton::Left) && has_menubar {
+                let (mx, my) = (mouse.column, mouse.row);
+
+                // Click on menu bar (row 0)?
+                if my == 0 {
+                    let help_x = self.help_menu_x();
+                    if mx < FILE_LABEL_WIDTH {
+                        // " File"
+                        self.open_menu = if self.open_menu == Some(OpenMenu::File) {
+                            None
+                        } else {
+                            Some(OpenMenu::File)
+                        };
+                        return Ok(true);
+                    } else if mx >= help_x && mx < help_x + HELP_LABEL_WIDTH {
+                        // " Help"
+                        self.open_menu = if self.open_menu == Some(OpenMenu::Help) {
+                            None
+                        } else {
+                            Some(OpenMenu::Help)
+                        };
+                        return Ok(true);
+                    } else if self.open_menu.is_some() {
+                        self.open_menu = None;
+                        return Ok(true);
+                    }
+                }
+
+                // Click inside an open dropdown?
+                if self.open_menu == Some(OpenMenu::File) {
+                    let drop = Rect::new(0, 1, 12, 3);
+                    if let Some(0) = self.menu_dropdown_hover_at(drop, mx, my) {
+                        self.should_quit = true;
+                        return Ok(true);
+                    } else {
+                        self.open_menu = None;
+                        return Ok(true);
+                    }
+                }
+                if self.open_menu == Some(OpenMenu::Help) {
+                    let help_x = self.help_menu_x();
+                    let drop_x = help_x.saturating_sub(12 - HELP_LABEL_WIDTH);
+                    let drop = Rect::new(drop_x, 1, 12, 3);
+                    if let Some(0) = self.menu_dropdown_hover_at(drop, mx, my) {
+                        self.show_about = true;
+                        self.open_menu = None;
+                        return Ok(true);
+                    } else {
+                        self.open_menu = None;
+                        return Ok(true);
+                    }
+                }
+            }
+
+            // Any click outside when menu is open closes it
+            if mouse.kind == event::MouseEventKind::Down(event::MouseButton::Left)
+                && self.open_menu.is_some()
+            {
+                self.open_menu = None;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn menu_dropdown_hover_at(&self, drop: Rect, mx: u16, my: u16) -> Option<usize> {
+        if mx > drop.x
+            && mx < drop.x + drop.width - 1
+            && my > drop.y
+            && my < drop.y + drop.height - 1
+        {
+            Some((my - drop.y - 1) as usize)
+        } else {
+            None
+        }
     }
 
     fn handle_listing_events(&mut self, ev: Event) -> anyhow::Result<()> {
@@ -784,6 +1157,8 @@ impl App {
 }
 
 const PG_BUTTON_JUMP: usize = 10;
+const FILE_LABEL_WIDTH: u16 = 6; // " File "
+const HELP_LABEL_WIDTH: u16 = 6; // " Help "
 const INITIAL_PAGE_SIZE: u32 = 50;
 const OLDER_PAGE_SIZE: u32 = 25;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);

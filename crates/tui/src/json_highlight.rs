@@ -1,22 +1,46 @@
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use crate::theme::Theme;
+
 const INDENT: &str = "  ";
 
-const KEY_STYLE: Style = Style::new().fg(Color::LightCyan);
-const STRING_STYLE: Style = Style::new().fg(Color::Green);
-const NUMBER_STYLE: Style = Style::new().fg(Color::Yellow);
-const BOOL_NULL_STYLE: Style = Style::new().fg(Color::Magenta);
-const PUNCT_STYLE: Style = Style::new().fg(Color::DarkGray);
+#[derive(Clone, Copy)]
+struct JsonStyles {
+    key: Style,
+    string: Style,
+    number: Style,
+    bool_null: Style,
+    punct: Style,
+}
 
-pub fn json_to_lines(value: &Value) -> Vec<Line<'static>> {
+impl From<&Theme> for JsonStyles {
+    fn from(theme: &Theme) -> Self {
+        Self {
+            key: theme.json_key,
+            string: theme.json_string,
+            number: theme.json_number,
+            bool_null: theme.json_bool_null,
+            punct: theme.json_punct,
+        }
+    }
+}
+
+pub fn json_to_lines(value: &Value, theme: &Theme) -> Vec<Line<'static>> {
+    let styles = JsonStyles::from(theme);
     let mut lines = Vec::new();
-    render_value(value, 0, false, &mut lines);
+    render_value(value, 0, false, &styles, &mut lines);
     lines
 }
 
-fn render_value(value: &Value, depth: usize, trailing_comma: bool, lines: &mut Vec<Line<'static>>) {
+fn render_value(
+    value: &Value,
+    depth: usize,
+    trailing_comma: bool,
+    s: &JsonStyles,
+    lines: &mut Vec<Line<'static>>,
+) {
     let comma = if trailing_comma { "," } else { "" };
     let prefix = INDENT.repeat(depth);
 
@@ -24,48 +48,48 @@ fn render_value(value: &Value, depth: usize, trailing_comma: bool, lines: &mut V
         Value::Null => {
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled("null", BOOL_NULL_STYLE),
-                Span::styled(comma, PUNCT_STYLE),
+                Span::styled("null", s.bool_null),
+                Span::styled(comma, s.punct),
             ]));
         }
         Value::Bool(b) => {
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(b.to_string(), BOOL_NULL_STYLE),
-                Span::styled(comma, PUNCT_STYLE),
+                Span::styled(b.to_string(), s.bool_null),
+                Span::styled(comma, s.punct),
             ]));
         }
         Value::Number(n) => {
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(n.to_string(), NUMBER_STYLE),
-                Span::styled(comma, PUNCT_STYLE),
+                Span::styled(n.to_string(), s.number),
+                Span::styled(comma, s.punct),
             ]));
         }
-        Value::String(s) => {
+        Value::String(st) => {
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(format!("\"{}\"", escape_json_string(s)), STRING_STYLE),
-                Span::styled(comma, PUNCT_STYLE),
+                Span::styled(format!("\"{}\"", escape_json_string(st)), s.string),
+                Span::styled(comma, s.punct),
             ]));
         }
         Value::Array(arr) => {
             if arr.is_empty() {
                 lines.push(Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("[]{comma}"), PUNCT_STYLE),
+                    Span::styled(format!("[]{comma}"), s.punct),
                 ]));
             } else {
                 lines.push(Line::from(vec![
                     Span::raw(prefix.clone()),
-                    Span::styled("[", PUNCT_STYLE),
+                    Span::styled("[", s.punct),
                 ]));
                 for (i, item) in arr.iter().enumerate() {
-                    render_value(item, depth + 1, i + 1 < arr.len(), lines);
+                    render_value(item, depth + 1, i + 1 < arr.len(), s, lines);
                 }
                 lines.push(Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("]{comma}"), PUNCT_STYLE),
+                    Span::styled(format!("]{comma}"), s.punct),
                 ]));
             }
         }
@@ -73,12 +97,12 @@ fn render_value(value: &Value, depth: usize, trailing_comma: bool, lines: &mut V
             if obj.is_empty() {
                 lines.push(Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("{{}}{comma}"), PUNCT_STYLE),
+                    Span::styled(format!("{{}}{comma}"), s.punct),
                 ]));
             } else {
                 lines.push(Line::from(vec![
                     Span::raw(prefix.clone()),
-                    Span::styled("{", PUNCT_STYLE),
+                    Span::styled("{", s.punct),
                 ]));
                 let mut keys: Vec<&String> = obj.keys().collect();
                 keys.sort();
@@ -91,23 +115,23 @@ fn render_value(value: &Value, depth: usize, trailing_comma: bool, lines: &mut V
                     {
                         lines.push(Line::from(vec![
                             Span::raw(child_prefix),
-                            Span::styled(format!("\"{}\"", escape_json_string(key)), KEY_STYLE),
-                            Span::styled(": ", PUNCT_STYLE),
+                            Span::styled(format!("\"{}\"", escape_json_string(key)), s.key),
+                            Span::styled(": ", s.punct),
                         ]));
-                        render_value_inline_open(val, depth + 1, has_comma, lines);
+                        render_value_inline_open(val, depth + 1, has_comma, s, lines);
                     } else {
                         let mut spans = vec![
                             Span::raw(child_prefix),
-                            Span::styled(format!("\"{}\"", escape_json_string(key)), KEY_STYLE),
-                            Span::styled(": ", PUNCT_STYLE),
+                            Span::styled(format!("\"{}\"", escape_json_string(key)), s.key),
+                            Span::styled(": ", s.punct),
                         ];
-                        append_inline_value(val, has_comma, &mut spans);
+                        append_inline_value(val, has_comma, s, &mut spans);
                         lines.push(Line::from(spans));
                     }
                 }
                 lines.push(Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("}}{comma}"), PUNCT_STYLE),
+                    Span::styled(format!("}}{comma}"), s.punct),
                 ]));
             }
         }
@@ -118,6 +142,7 @@ fn render_value_inline_open(
     value: &Value,
     depth: usize,
     trailing_comma: bool,
+    s: &JsonStyles,
     lines: &mut Vec<Line<'static>>,
 ) {
     let comma = if trailing_comma { "," } else { "" };
@@ -125,19 +150,19 @@ fn render_value_inline_open(
     match value {
         Value::Array(arr) => {
             if let Some(last_line) = lines.last_mut() {
-                last_line.spans.push(Span::styled("[", PUNCT_STYLE));
+                last_line.spans.push(Span::styled("[", s.punct));
             }
             for (i, item) in arr.iter().enumerate() {
-                render_value(item, depth + 1, i + 1 < arr.len(), lines);
+                render_value(item, depth + 1, i + 1 < arr.len(), s, lines);
             }
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(format!("]{comma}"), PUNCT_STYLE),
+                Span::styled(format!("]{comma}"), s.punct),
             ]));
         }
         Value::Object(obj) => {
             if let Some(last_line) = lines.last_mut() {
-                last_line.spans.push(Span::styled("{", PUNCT_STYLE));
+                last_line.spans.push(Span::styled("{", s.punct));
             }
             let mut keys: Vec<&String> = obj.keys().collect();
             keys.sort();
@@ -149,58 +174,63 @@ fn render_value_inline_open(
                 if matches!(val, Value::Object(_) | Value::Array(_)) && !is_empty_container(val) {
                     lines.push(Line::from(vec![
                         Span::raw(child_prefix),
-                        Span::styled(format!("\"{}\"", escape_json_string(key)), KEY_STYLE),
-                        Span::styled(": ", PUNCT_STYLE),
+                        Span::styled(format!("\"{}\"", escape_json_string(key)), s.key),
+                        Span::styled(": ", s.punct),
                     ]));
-                    render_value_inline_open(val, depth + 1, has_comma, lines);
+                    render_value_inline_open(val, depth + 1, has_comma, s, lines);
                 } else {
                     let mut spans = vec![
                         Span::raw(child_prefix),
-                        Span::styled(format!("\"{}\"", escape_json_string(key)), KEY_STYLE),
-                        Span::styled(": ", PUNCT_STYLE),
+                        Span::styled(format!("\"{}\"", escape_json_string(key)), s.key),
+                        Span::styled(": ", s.punct),
                     ];
-                    append_inline_value(val, has_comma, &mut spans);
+                    append_inline_value(val, has_comma, s, &mut spans);
                     lines.push(Line::from(spans));
                 }
             }
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(format!("}}{comma}"), PUNCT_STYLE),
+                Span::styled(format!("}}{comma}"), s.punct),
             ]));
         }
         _ => {
-            render_value(value, depth, trailing_comma, lines);
+            render_value(value, depth, trailing_comma, s, lines);
         }
     }
 }
 
-fn append_inline_value(value: &Value, trailing_comma: bool, spans: &mut Vec<Span<'static>>) {
+fn append_inline_value(
+    value: &Value,
+    trailing_comma: bool,
+    s: &JsonStyles,
+    spans: &mut Vec<Span<'static>>,
+) {
     let comma = if trailing_comma { "," } else { "" };
     match value {
         Value::Null => {
-            spans.push(Span::styled("null", BOOL_NULL_STYLE));
-            spans.push(Span::styled(comma, PUNCT_STYLE));
+            spans.push(Span::styled("null", s.bool_null));
+            spans.push(Span::styled(comma, s.punct));
         }
         Value::Bool(b) => {
-            spans.push(Span::styled(b.to_string(), BOOL_NULL_STYLE));
-            spans.push(Span::styled(comma, PUNCT_STYLE));
+            spans.push(Span::styled(b.to_string(), s.bool_null));
+            spans.push(Span::styled(comma, s.punct));
         }
         Value::Number(n) => {
-            spans.push(Span::styled(n.to_string(), NUMBER_STYLE));
-            spans.push(Span::styled(comma, PUNCT_STYLE));
+            spans.push(Span::styled(n.to_string(), s.number));
+            spans.push(Span::styled(comma, s.punct));
         }
-        Value::String(s) => {
+        Value::String(st) => {
             spans.push(Span::styled(
-                format!("\"{}\"", escape_json_string(s)),
-                STRING_STYLE,
+                format!("\"{}\"", escape_json_string(st)),
+                s.string,
             ));
-            spans.push(Span::styled(comma, PUNCT_STYLE));
+            spans.push(Span::styled(comma, s.punct));
         }
         Value::Array(arr) if arr.is_empty() => {
-            spans.push(Span::styled(format!("[]{comma}"), PUNCT_STYLE));
+            spans.push(Span::styled(format!("[]{comma}"), s.punct));
         }
         Value::Object(obj) if obj.is_empty() => {
-            spans.push(Span::styled(format!("{{}}{comma}"), PUNCT_STYLE));
+            spans.push(Span::styled(format!("{{}}{comma}"), s.punct));
         }
         _ => {
             spans.push(Span::raw("..."));

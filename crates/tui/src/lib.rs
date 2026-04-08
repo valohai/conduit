@@ -8,13 +8,16 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 
 use chrono_humanize::HumanTime;
-use conduit_core::{Config, Direction, Storages, TransitPage, TransitQuery, TransitRecord};
+use conduit_core::{
+    Config, Direction, Provider, Storages, TransitPage, TransitQuery, TransitRecord,
+};
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use logging::LogBuffer;
 use ratatui::Terminal;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -34,6 +37,106 @@ fn format_thousands(n: u64) -> String {
         result.push(c);
     }
     result
+}
+
+trait AsF64: Copy {
+    fn as_f64(self) -> f64;
+}
+impl AsF64 for f64 {
+    fn as_f64(self) -> f64 {
+        self
+    }
+}
+impl AsF64 for u64 {
+    fn as_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+#[inline]
+fn update_range<T: AsF64>(range: &mut Option<(T, T)>, value: Option<T>) {
+    if let Some(v) = value {
+        *range = Some(match *range {
+            Some((min, max)) => {
+                let vf = v.as_f64();
+                (
+                    if vf < min.as_f64() { v } else { min },
+                    if vf > max.as_f64() { v } else { max },
+                )
+            }
+            None => (v, v),
+        });
+    }
+}
+
+/// Build a right-aligned numeric cell with an optional data-bar background.
+/// When `range` is `Some((min, max))`, the cell background is filled
+/// proportionally to where `value` falls in that range.
+fn numeric_cell<'a, T: AsF64>(
+    value: Option<T>,
+    fmt: fn(T) -> String,
+    width: usize,
+    range: Option<(T, T)>,
+    bar_style: Style,
+) -> Cell<'a> {
+    let text = value.map(fmt).unwrap_or_else(|| "-".into());
+    if let (Some(v), Some((min, max))) = (value, range) {
+        let span = max.as_f64() - min.as_f64();
+        let ratio = if span > 0.0 {
+            (v.as_f64() - min.as_f64()) / span
+        } else {
+            1.0
+        };
+        let padded = format!("{text:>width$}");
+        let bar_chars = ((ratio * width as f64).round() as usize).min(width);
+        let (bar_part, rest_part) = padded.split_at(bar_chars);
+        Cell::from(Line::from(vec![
+            Span::styled(bar_part.to_owned(), bar_style),
+            Span::raw(rest_part.to_owned()),
+        ]))
+    } else {
+        Cell::from(Line::from(text).alignment(Alignment::Right))
+    }
+}
+
+/// Pre-extracted display fields from a `TransitRecord`.
+struct DisplayTransitRecord<'a> {
+    time: String,
+    provider: &'a Provider,
+    model: Option<&'a str>,
+    cost: Option<f64>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+impl<'a> DisplayTransitRecord<'a> {
+    fn from_record(record: &'a TransitRecord, relative_time: bool) -> Self {
+        let input_tokens = record
+            .usage
+            .as_ref()
+            .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
+            .and_then(|v| v.as_u64());
+        let output_tokens = record
+            .usage
+            .as_ref()
+            .and_then(|u| {
+                u.get("completion_tokens")
+                    .or_else(|| u.get("output_tokens"))
+            })
+            .and_then(|v| v.as_u64());
+        Self {
+            time: if relative_time {
+                HumanTime::from(record.stored_at).to_string()
+            } else {
+                record.stored_at.format("%Y-%m-%d %H:%M:%S").to_string()
+            },
+            provider: &record.provider,
+            model: record.model.as_deref(),
+            cost: record.estimate_cost(),
+            input_tokens,
+            output_tokens,
+        }
+    }
 }
 
 enum View {
@@ -94,6 +197,7 @@ struct App {
     auto_follow: bool,
     unseen_count: usize,
     use_relative_time: bool,
+    show_data_bars: bool,
     transit_detail_scroll: u16,
     log_buffer: LogBuffer,
     log_area: Rect,
@@ -131,6 +235,7 @@ impl App {
             auto_follow: true,
             unseen_count: 0,
             use_relative_time: true,
+            show_data_bars: true,
             transit_detail_scroll: 0,
             log_buffer,
             log_area: Rect::ZERO,
@@ -441,52 +546,47 @@ impl App {
         ])
         .style(theme.table_header);
 
-        let mut rows: Vec<Row> = self
+        let bar_style = theme.data_bar;
+
+        let mut cost_range: Option<(f64, f64)> = None;
+        let mut input_range: Option<(u64, u64)> = None;
+        let mut output_range: Option<(u64, u64)> = None;
+        let display_records: Vec<DisplayTransitRecord> = self
             .transit_records
             .iter()
-            .map(|record| {
-                let time_ago = if self.use_relative_time {
-                    HumanTime::from(record.stored_at).to_string()
-                } else {
-                    record.stored_at.format("%Y-%m-%d %H:%M:%S").to_string()
-                };
+            .map(|r| {
+                let dr = DisplayTransitRecord::from_record(r, self.use_relative_time);
+                if self.show_data_bars {
+                    update_range(&mut cost_range, dr.cost);
+                    update_range(&mut input_range, dr.input_tokens);
+                    update_range(&mut output_range, dr.output_tokens);
+                }
+                dr
+            })
+            .collect();
 
-                let model_str = match record.model.as_deref() {
-                    Some(m) => m.to_string(),
-                    None => "-".to_string(),
-                };
-
-                let cost = record
-                    .estimate_cost()
-                    .map(|c| format!("${:.5}", c))
-                    .unwrap_or_else(|| "-".to_string());
-
-                let input_tokens = record
-                    .usage
-                    .as_ref()
-                    .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
-                    .and_then(|v| v.as_u64())
-                    .map(format_thousands)
-                    .unwrap_or_else(|| "-".to_string());
-
-                let output_tokens = record
-                    .usage
-                    .as_ref()
-                    .and_then(|u| {
-                        u.get("completion_tokens")
-                            .or_else(|| u.get("output_tokens"))
-                    })
-                    .and_then(|v| v.as_u64())
-                    .map(format_thousands)
-                    .unwrap_or_else(|| "-".to_string());
-
+        let mut rows: Vec<Row> = display_records
+            .iter()
+            .map(|dr| {
                 Row::new(vec![
-                    Cell::from(time_ago),
-                    Cell::from(record.provider.to_string()),
-                    Cell::from(model_str),
-                    Cell::from(Line::from(cost).alignment(Alignment::Right)),
-                    Cell::from(Line::from(input_tokens).alignment(Alignment::Right)),
-                    Cell::from(Line::from(output_tokens).alignment(Alignment::Right)),
+                    Cell::from(dr.time.as_str()),
+                    Cell::from(dr.provider.to_string()),
+                    Cell::from(dr.model.unwrap_or("-")),
+                    numeric_cell(dr.cost, |c| format!("${:.5}", c), 12, cost_range, bar_style),
+                    numeric_cell(
+                        dr.input_tokens,
+                        format_thousands,
+                        12,
+                        input_range,
+                        bar_style,
+                    ),
+                    numeric_cell(
+                        dr.output_tokens,
+                        format_thousands,
+                        13,
+                        output_range,
+                        bar_style,
+                    ),
                 ])
             })
             .collect();
@@ -541,12 +641,13 @@ impl App {
         frame.render_stateful_widget(scrollbar, table_area, &mut scrollbar_state);
 
         let status = format!(
-            "Enter/Right/l: details, q: quit, f: go to latest, t: {}",
+            "Enter/Right/l: details, q: quit, f: go to latest, t: {}, b: data bars {}",
             if self.use_relative_time {
                 "absolute times"
             } else {
                 "relative times"
             },
+            if self.show_data_bars { "off" } else { "on" },
         );
 
         frame.render_widget(Paragraph::new(status).style(theme.status), status_area);
@@ -890,6 +991,9 @@ impl App {
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.use_relative_time = !self.use_relative_time;
+                }
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.show_data_bars = !self.show_data_bars;
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.auto_follow = !self.auto_follow;

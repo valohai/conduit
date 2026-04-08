@@ -23,6 +23,19 @@ use ratatui::widgets::{
 use theme::Theme;
 use uuid::Uuid;
 
+/// Format a u64 with thousand separators (e.g. 1234567 -> "1,234,567").
+fn format_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
 enum View {
     TransitListing,
     TransitDetail(usize),
@@ -422,9 +435,9 @@ impl App {
             Cell::from("Time"),
             Cell::from("Provider"),
             Cell::from("Model"),
-            Cell::from("Cost"),
-            Cell::from("Input Tokens"),
-            Cell::from("Output Tokens"),
+            Cell::from(Line::from("Cost").alignment(Alignment::Right)),
+            Cell::from(Line::from("Input Tokens").alignment(Alignment::Right)),
+            Cell::from(Line::from("Output Tokens").alignment(Alignment::Right)),
         ])
         .style(theme.table_header);
 
@@ -453,7 +466,7 @@ impl App {
                     .as_ref()
                     .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v.to_string())
+                    .map(format_thousands)
                     .unwrap_or_else(|| "-".to_string());
 
                 let output_tokens = record
@@ -464,16 +477,16 @@ impl App {
                             .or_else(|| u.get("output_tokens"))
                     })
                     .and_then(|v| v.as_u64())
-                    .map(|v| v.to_string())
+                    .map(format_thousands)
                     .unwrap_or_else(|| "-".to_string());
 
                 Row::new(vec![
                     Cell::from(time_ago),
                     Cell::from(record.provider.to_string()),
                     Cell::from(model_str),
-                    Cell::from(cost),
-                    Cell::from(input_tokens),
-                    Cell::from(output_tokens),
+                    Cell::from(Line::from(cost).alignment(Alignment::Right)),
+                    Cell::from(Line::from(input_tokens).alignment(Alignment::Right)),
+                    Cell::from(Line::from(output_tokens).alignment(Alignment::Right)),
                 ])
             })
             .collect();

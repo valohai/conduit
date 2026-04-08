@@ -168,6 +168,9 @@ pub struct Theme {
     /// Style for the menubar decoration
     pub menubar_decoration_style: Style,
 
+    /// Data-bar background for numeric cells (Excel-style proportional fill)
+    pub data_bar: Style,
+
     // JSON highlighting
     pub json_key: Style,
     pub json_string: Style,
@@ -216,6 +219,8 @@ impl Theme {
             menu_dropdown_selected: Style::default(),
             menubar_decoration: MenubarDecoration::None,
             menubar_decoration_style: Style::default(),
+
+            data_bar: Style::default().bg(Color::Rgb(0x2A, 0x5A, 0x8C)),
 
             json_key: Style::new().fg(Color::LightCyan),
             json_string: Style::new().fg(Color::Green),
@@ -282,6 +287,8 @@ impl Theme {
             menu_dropdown_selected: Style::default().bg(Color::Black).fg(Color::White),
             menubar_decoration: MenubarDecoration::None,
             menubar_decoration_style: Style::default(),
+
+            data_bar: Style::default().bg(Color::Rgb(0x20, 0x60, 0xA0)),
 
             json_key: Style::new().bg(bg).fg(Color::LightCyan),
             json_string: Style::new().bg(bg).fg(Color::LightGreen),
@@ -352,6 +359,8 @@ impl Theme {
                 .bg(menu_bg)
                 .fg(Color::Rgb(0xFF, 0xD3, 0x2A)),
 
+            data_bar: Style::default().bg(Color::Rgb(0x7A, 0x6A, 0x10)),
+
             json_key: Style::new().bg(bg).fg(Color::LightCyan),
             json_string: Style::new().bg(bg).fg(Color::LightYellow),
             json_number: Style::new().bg(bg).fg(Color::Yellow),
@@ -418,6 +427,8 @@ impl Theme {
             menubar_decoration_style: Style::default()
                 .bg(Color::Gray)
                 .fg(Color::Rgb(0x0E, 0x27, 0x05)),
+
+            data_bar: Style::default().bg(Color::Rgb(0x1A, 0x50, 0x1A)),
 
             json_key: Style::new().bg(bg).fg(Color::LightGreen),
             json_string: Style::new().bg(bg).fg(Color::Green),

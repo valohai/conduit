@@ -1,5 +1,6 @@
 target/
 conduit.toml
+mise.local.toml
 .env
 *.db
 *.db-shm

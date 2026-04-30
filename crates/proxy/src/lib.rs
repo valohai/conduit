@@ -61,7 +61,9 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
 
     if config.valohai_llm.enabled() {
         let config_for_sync = config.clone();
-        let http_client_for_sync = reqwest::Client::new();
+        let http_client_for_sync = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
         tokio::spawn(sync::valohai_llm_poster(
             storages,
             config_for_sync,

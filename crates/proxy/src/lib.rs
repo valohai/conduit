@@ -1,5 +1,6 @@
 mod frame;
 mod inspect;
+mod sync;
 
 use std::sync::Arc;
 
@@ -49,7 +50,19 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
         anyhow::bail!("No providers specified, gateway will not be functional.");
     }
     let (report_tx, report_rx) = mpsc::unbounded_channel();
-    tokio::spawn(report_processor(report_rx, storages));
+    tokio::spawn(report_processor(report_rx, storages.clone()));
+
+    if config.valohai_llm.enabled() {
+        let config_for_sync = config.clone();
+        let http_client_for_sync = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        tokio::spawn(sync::valohai_llm_poster(
+            storages,
+            config_for_sync,
+            http_client_for_sync,
+        ));
+    }
 
     let state = Arc::new(AppState {
         http_client: reqwest::Client::builder()
@@ -305,6 +318,7 @@ mod tests {
                     upstream: "http://127.0.0.1:1".into(),
                 },
             )]),
+            ..Config::default()
         };
         let app = build_router(&config, test_state());
 
@@ -338,6 +352,7 @@ mod tests_openai_chat_completions {
                     upstream: stub_upstream().await,
                 },
             )]),
+            ..Config::default()
         };
         build_router(&config, test_state())
     }

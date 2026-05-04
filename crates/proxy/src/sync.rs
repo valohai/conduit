@@ -2,31 +2,25 @@ use std::time::Duration;
 
 use conduit_core::{Config, Storages, TransitRecord};
 
-use crate::sync_notify::SyncCheckNotify;
 use serde::Serialize;
 
-const SYNC_BATCH_SIZE: u32 = 64;
+// Max records sent per outgoing POST; further records are sent in subsequent
+// requests within the same flush.
+const SYNC_POST_BATCH_SIZE: u32 = 64;
+// The cadence to flush transits to Valohai LLM.
 const SYNC_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
-pub async fn valohai_llm_poster(
-    storages: Storages,
-    config: Config,
-    http_client: reqwest::Client,
-    sync_notify: SyncCheckNotify,
-) {
+pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client: reqwest::Client) {
     let api_key = &config.valohai_llm.api_key;
     let endpoint = format!("{}/api/ingest/transits/", config.valohai_llm.url);
 
     let mut interval = tokio::time::interval(SYNC_FLUSH_INTERVAL);
 
     loop {
-        let flush_remaining = tokio::select! {
-            _ = interval.tick() => true,
-            _ = sync_notify.notified() => false,
-        };
+        interval.tick().await;
 
         loop {
-            let records = match storages.transit.list_unsent(SYNC_BATCH_SIZE).await {
+            let records = match storages.transit.list_unsent(SYNC_POST_BATCH_SIZE).await {
                 Ok(r) if r.is_empty() => break,
                 Ok(r) => r,
                 Err(e) => {
@@ -34,10 +28,6 @@ pub async fn valohai_llm_poster(
                     break;
                 }
             };
-
-            if !flush_remaining && records.len() < SYNC_BATCH_SIZE as usize {
-                break;
-            }
 
             let ids: Vec<_> = records.iter().map(|r| r.transit_id).collect();
             let payload: Vec<TransitPost> = records.iter().map(TransitPost::from).collect();

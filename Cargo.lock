@@ -398,71 +398,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "conduit-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "conduit-proxy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "chrono",
- "conduit-core",
- "futures-util",
- "http-body-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "conduit-storage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "conduit-core",
- "serde_json",
- "sqlx",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "conduit-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "chrono-humanize",
- "conduit-core",
- "crossterm",
- "ratatui",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3101,13 +3036,78 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "conduit-core",
- "conduit-proxy",
- "conduit-storage",
- "conduit-tui",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "valohai-conduit-core",
+ "valohai-conduit-proxy",
+ "valohai-conduit-storage",
+ "valohai-conduit-tui",
+]
+
+[[package]]
+name = "valohai-conduit-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "valohai-conduit-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
+ "uuid",
+ "valohai-conduit-core",
+]
+
+[[package]]
+name = "valohai-conduit-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+ "valohai-conduit-core",
+]
+
+[[package]]
+name = "valohai-conduit-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-humanize",
+ "crossterm",
+ "ratatui",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "valohai-conduit-core",
 ]
 
 [[package]]

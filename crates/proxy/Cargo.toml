@@ -1,9 +1,17 @@
 [package]
-name = "conduit-proxy"
+name = "valohai-conduit-proxy"
+description = "Reverse proxy implementation for Valohai Conduit, with streaming inspection and usage recording."
+categories = ["web-programming::http-server"]
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [lib]
+name = "conduit_proxy"
 doctest = false
 
 [lints]
@@ -15,15 +23,15 @@ async-stream.workspace = true
 axum.workspace = true
 bytes.workspace = true
 chrono.workspace = true
-conduit-core.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 tokio-stream.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+valohai-conduit-core.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

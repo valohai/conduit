@@ -5,6 +5,11 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/valohai/conduit"
+homepage = "https://github.com/valohai/conduit"
+authors = ["Valohai"]
+keywords = ["llm", "proxy", "openai", "anthropic", "valohai"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -14,10 +19,6 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-humanize = "0.2"
 clap = { version = "4.5", features = ["derive"] }
-conduit-core = { version = "0.1.0", path = "crates/core" }
-conduit-proxy = { version = "0.1.0", path = "crates/proxy" }
-conduit-storage = { version = "0.1.0", path = "crates/storage" }
-conduit-tui = { version = "0.1.0", path = "crates/tui" }
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 futures-util = "0.3"
 http-body-util = "0.1"
@@ -33,6 +34,10 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.22", features = ["v7"] }
+valohai-conduit-core = { version = "0.1.0", path = "crates/core" }
+valohai-conduit-proxy = { version = "0.1.0", path = "crates/proxy" }
+valohai-conduit-storage = { version = "0.1.0", path = "crates/storage" }
+valohai-conduit-tui = { version = "0.1.0", path = "crates/tui" }
 
 [workspace.lints.clippy]
 all = { level = "deny" }

@@ -1,9 +1,17 @@
 [package]
-name = "conduit-core"
+name = "valohai-conduit-core"
+description = "Core types, configuration, and traits for Valohai Conduit (provider definitions, transit storage trait, cost estimation)."
+categories = ["api-bindings"]
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [lib]
+name = "conduit_core"
 doctest = false
 
 [lints]

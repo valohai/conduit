@@ -1,7 +1,15 @@
 [package]
 name = "valohai-conduit"
+description = "Single-binary LLM proxy that records token usage. Routes traffic from OpenAI/Anthropic SDKs and tracks billable usage per provider."
+categories = ["command-line-utilities"]
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [lints]
 workspace = true
@@ -13,10 +21,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-conduit-core.workspace = true
-conduit-proxy.workspace = true
-conduit-storage.workspace = true
-conduit-tui.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing.workspace = true
+valohai-conduit-core.workspace = true
+valohai-conduit-proxy.workspace = true
+valohai-conduit-storage.workspace = true
+valohai-conduit-tui.workspace = true

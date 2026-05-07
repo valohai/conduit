@@ -11,6 +11,12 @@ homepage = "https://github.com/valohai/conduit"
 authors = ["Valohai"]
 keywords = ["llm", "proxy", "openai", "anthropic", "valohai"]
 
+[workspace.metadata.release]
+shared-version = true
+pre-release-commit-message = "Become {{version}}"
+tag-name = "v{{version}}"
+tag-message = "Version {{version}}"
+
 [workspace.dependencies]
 anyhow = "1"
 async-stream = "0.3"

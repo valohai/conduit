@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::layer::SubscriberExt;
 
 #[derive(Parser)]
+#[command(name = "conduit", version)]
 struct Cli {
     #[arg(short = 'v', long, action = clap::ArgAction::Count, global = true, help = "Increase log verbosity (-v for debug, -vv for trace)")]
     verbose: u8,

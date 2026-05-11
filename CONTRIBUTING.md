@@ -136,5 +136,8 @@ This will:
 - commit the changes
 - publish the crates
 - tag the commit
-- push the tagged commit to remote which will trigger
-  a GitHub Action for release asset building
+- push the tagged commit to remote
+
+The new git tag will trigger `release` workflow's GitHub Actions
+to _build_, _host_ and _announce_ the cross-compiled binaries of
+the new version with [dist](https://github.com/axodotdev/cargo-dist).

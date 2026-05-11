@@ -1,0 +1,25 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.31.0"
+ci = "github"
+hosting = "github"
+installers = [
+    "shell",
+    "powershell",
+]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# validate config on PRs, building/distributing happens on tag pushes
+pr-run-mode = "plan"
+# Where binaries should be placed on the end-user machine,
+# using the same as `uv` and `ruff`, which are quite common:
+# https://github.com/astral-sh/uv/blob/main/dist-workspace.toml#L70
+install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
+install-updater = false

@@ -50,3 +50,7 @@ all = { level = "deny" }
 
 [workspace.lints.rust]
 warnings = { level = "deny" }
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

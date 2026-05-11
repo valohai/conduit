@@ -10,16 +10,22 @@ Single binary, written in Rust.
 
 ## Usage
 
-- TODO(?): publish on https://crates.io/
-- TODO(?): build and publish on GitHub
-- TODO(?): add script/guidance how to install straight from GitHub releases
+1. TODO(ruksi): add guidance how to install straight from GitHub releases
+
+Conduit is available through:
+
+- `TODO` from [GitHub Release Assets](https://github.com/valohai/conduit/releases) (standalone)
+- `cargo install valohai-conduit` from [crates.io](https://crates.io/crates/valohai-conduit) (requires Rust)
+
+After the above installation, the `conduit` binary is available:
 
 ```shell
-cargo install valohai-conduit
 conduit --help
+```
 
-# TODO: document the configuration
+1. TODO(ruksi): document the configuration
 
+```shell
 conduit
 ```
 

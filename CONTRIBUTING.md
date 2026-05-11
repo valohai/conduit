@@ -76,3 +76,65 @@ uv run --env-file .env python/openai_completions_streaming.py
 uv run --env-file .env python/openai_responses.py
 uv run --env-file .env python/openai_responses_streaming.py
 ```
+
+### Release
+
+Releasing a new version of Conduit involves the following steps:
+
+1. Use [`cargo-release`](https://github.com/crate-ci/cargo-release) to publish
+   a new version on [crates.io](https://crates.io/crates/valohai-conduit) while
+   keeping version control in sync.
+
+### Release Tools
+
+```shell
+# install cargo-release if not available
+cargo install cargo-release --locked
+cargo release --version
+```
+
+Setup crates.io authentication:
+
+```shell
+# if you have logged in to crates.io, registry token should be in:
+cat $CARGO_HOME/credentials.toml
+# which means the token will be automatically used
+
+# if not, login to crates.io, and possibly request access inside of Valohai
+cargo login
+
+# you can some test this via
+cargo owner --list valohai-conduit
+# valohai (or something else, whoever are the current owners)
+```
+
+### Releasing
+
+Make sure you are on the latest `main` branch:
+
+```shell
+git checkout main
+git pull
+git status
+```
+
+Decide on a [bump level](https://github.com/crate-ci/cargo-release/blob/HEAD/docs/reference.md#bump-level):
+
+> usually `patch`, `minor` or `major`
+
+```shell
+# this is a _dry run_
+cargo release --workspace [level]
+
+# and, if everything looks proper
+cargo release --workspace [level] --execute
+```
+
+This will:
+
+- update version numbering inside the project
+- commit the changes
+- publish the crates
+- tag the commit
+- push the tagged commit to remote which will trigger
+  a GitHub Action for release asset building

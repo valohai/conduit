@@ -77,13 +77,7 @@ uv run --env-file .env python/openai_responses.py
 uv run --env-file .env python/openai_responses_streaming.py
 ```
 
-### Release
-
-Releasing a new version of Conduit involves the following steps:
-
-1. Use [`cargo-release`](https://github.com/crate-ci/cargo-release) to publish
-   a new version on [crates.io](https://crates.io/crates/valohai-conduit) while
-   keeping version control in sync.
+### Releasing
 
 ### Release Tools
 
@@ -108,9 +102,19 @@ cargo owner --list valohai-conduit
 # valohai (or something else, whoever are the current owners)
 ```
 
-### Releasing
+### Release Step-by-Step
 
-Make sure you are on the latest `main` branch:
+Overview:
+
+1. Use [`cargo-release`](https://github.com/crate-ci/cargo-release) to publish
+   a new version on [crates.io](https://crates.io/crates/valohai-conduit) while
+   keeping version control in sync.
+2. Watch the binary build run
+   [in GitHub Actions](https://github.com/valohai/conduit/actions?query=workflow%3ARelease+event%3Apush).
+3. After 10 minutes, make sure new release gets announced
+   [on GitHub Releases](https://github.com/valohai/conduit/releases).
+
+Confirm that you are on the latest `main` branch:
 
 ```shell
 git checkout main
@@ -132,12 +136,31 @@ cargo release --workspace [level] --execute
 
 This will:
 
-- update version numbering inside the project
+- update version numbering inside the codebase
 - commit the changes
 - publish the crates
 - tag the commit
 - push the tagged commit to remote
 
+A successful `cargo release` ends like this:
+
+```bash
+To github.com:valohai/conduit.git
+   XXXXXXX..YYYYYYY  main -> main
+ * [new tag]         vX.Y.Z -> vX.Y.Z
+```
+
 The new git tag will trigger `release` workflow's GitHub Actions
 to _build_, _host_ and _announce_ the cross-compiled binaries of
 the new version with [dist](https://github.com/axodotdev/cargo-dist).
+
+Keep track how the building goes
+[on GitHub Actions](https://github.com/valohai/conduit/actions?query=workflow%3ARelease+event%3Apush).
+
+It will take 10 minutes or so to build all binaries and announce them.
+
+If everything goes as planned,
+you will end up with a new release
+[on GitHub Releases](https://github.com/valohai/conduit/releases).
+
+Done!

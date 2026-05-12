@@ -8,26 +8,27 @@ tracking with zero code changes.
 
 Single binary, written in Rust.
 
-## Usage
-
-1. TODO(ruksi): add guidance how to install straight from GitHub releases
+## Install
 
 Conduit is available through:
 
-- `TODO` from [GitHub Release Assets](https://github.com/valohai/conduit/releases) (standalone)
+- installer script or prebuilt binary from [GitHub Releases](https://github.com/valohai/conduit/releases/latest)
 - `cargo install valohai-conduit` from [crates.io](https://crates.io/crates/valohai-conduit) (requires Rust)
 
-After the above installation, the `conduit` binary is available:
+You can confirm that Conduit is installed with:
 
 ```shell
 conduit --help
+
+# Usage: conduit [OPTIONS] [COMMAND]
+#
+# Commands:
+#   proxy      Run the proxy server [default command]
+#   dashboard  Open the terminal-based dashboard
+#   help       Print this message or the help of the given subcommand(s)
 ```
 
-1. TODO(ruksi): document the configuration
-
-```shell
-conduit
-```
+## Usage
 
 **Once Conduit is running, point your SDK's base URL at it.**
 The URL is `http://<proxy-address>/<provider_key>` where `<provider_key>` matches
@@ -41,16 +42,16 @@ export OPENAI_BASE_URL=http://localhost:8080/openai/v1
 export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
 ```
 
-Most SDKs pick these up automatically — no code changes needed.
+Most SDKs automatically pick up the above env vars with no code changes needed.
 
-Alternatively, pass `base_url` directly:
+Alternatively, pass the base API url directly, e.g. with common Python SDKs:
 
 ```python
 client = OpenAI(base_url="http://localhost:8080/openai/v1")
 client = Anthropic(base_url="http://localhost:8080/anthropic")
 ```
 
-See [`examples/`](examples/) for complete working examples.
+See [`examples/`](examples/) for complete Python usage examples.
 
 ## Development
 

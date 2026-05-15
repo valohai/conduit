@@ -24,7 +24,7 @@ axum = "0.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-humanize = "0.2"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 futures-util = "0.3"
 http-body-util = "0.1"
@@ -39,7 +39,7 @@ toml = "1"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.22", features = ["v7"] }
+uuid = { version = "1.23", features = ["v7"] }
 valohai-conduit-core = { version = "0.1.1", path = "crates/core" }
 valohai-conduit-proxy = { version = "0.1.1", path = "crates/proxy" }
 valohai-conduit-storage = { version = "0.1.1", path = "crates/storage" }

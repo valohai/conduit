@@ -2,11 +2,19 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A local proxy that sits between your code and LLM providers,
-recording billable usage. Point SDK's base URL at Conduit, and get detailed
+Conduit is a local proxy that sits between your code and LLM providers
+recording billable usage.\
+Point SDK's base URL at Conduit, and get detailed
 tracking with zero code changes.
 
 Single binary, written in Rust.
+
+What Conduit allows you to do
+
+- run a proxy locally to intercept API calls
+- set up one or more LLM API providers to forward the API calls to
+- view the token consumption of each API call in a terminal UI
+- send information to Valohai LLM for further cost analysis
 
 ## Install
 
@@ -28,11 +36,25 @@ conduit --help
 #   help       Print this message or the help of the given subcommand(s)
 ```
 
+## Configuration
+
+Conduit uses a `conduit.toml` file as its configuration file.
+
+Create a `conduit.toml` file in your working directory, otherwise Conduit will not be able to run.
+
+You can copy the example [from here](https://github.com/valohai/conduit/blob/main/conduit.example.toml) and adjust where Conduit will be listening to LLM calls and setup the providers you are using.
+
+Conduit can capture cost values from responses formatted in the common Anthropic (Messages API) and OpenAI (Responses & Chat Completions APIs) or similar responses from other models.
+
+Once a configuration file exists, you can run Conduit in your working directory with the command:
+
+```shell
+conduit proxy
+```
+
 ## Usage
 
-**Once Conduit is running, point your SDK's base URL at it.**
-The URL is `http://<proxy-address>/<provider_key>` where `<provider_key>` matches
-a `[providers.<key>]` section in your `conduit.toml`.
+**Once Conduit is running, point your SDK's base URL at it.** The URL is `http://<proxy-address>/<provider_key>` where `<provider_key>` matches a `[providers.<key>]` section in your `conduit.toml`.
 
 Set the base URL environment variable for your provider SDK:
 
@@ -51,10 +73,8 @@ client = OpenAI(base_url="http://localhost:8080/openai/v1")
 client = Anthropic(base_url="http://localhost:8080/anthropic")
 ```
 
-See [`examples/`](examples/) for complete Python usage examples.
+See [`examples/`](https://github.com/valohai/conduit/tree/main/examples) for complete Python usage examples.
 
 ## Development
 
-See the
-[contributing guide](https://github.com/valohai/conduit?tab=contributing-ov-file)
-to get started.
+See the [contributing guide](https://github.com/valohai/conduit?tab=contributing-ov-file) to get started.

@@ -46,6 +46,14 @@ You can copy the example [from here](https://github.com/valohai/conduit/blob/mai
 
 Conduit can capture cost values from responses formatted in the common Anthropic (Messages API) and OpenAI (Responses & Chat Completions APIs) or similar responses from other models.
 
+Costs are estimated from a built-in price table of OpenAI and Anthropic models. For any other model (or your own rates), add a `[pricing]` table to `conduit.toml`; each key is a model name prefix, and these prices are checked first:
+
+```toml
+[pricing."jev-"]
+input = 0.042    # USD per million tokens
+output = 0.0
+```
+
 Once a configuration file exists, you can run Conduit in your working directory with the command:
 
 ```shell

@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = conduit_core::Config::load(cli.config_path)?;
     tracing::debug!(?config, "config loaded");
+    conduit_core::cost::set_custom_pricing(&config.pricing);
 
     // TODO: make database path configurable; defaulting to "conduit.db"
     let transit_storage = conduit_storage::SqliteTransitStorage::new("sqlite:conduit.db").await?;

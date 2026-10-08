@@ -17,6 +17,13 @@ upstream = "https://api.anthropic.com"
 [providers.bin]
 upstream = "https://httpbin.org/"
 
+# Prices for models the built-in table doesn't know, or your own rates, in USD per
+# million tokens. A key matches every model name it starts with (the longest key wins)
+# and is checked before the built-in table.
+# [pricing."jev-"]
+# input = 0.042
+# output = 0.0
+
 # uncomment and fill for https://llm.valohai.com/ integration:
 # [valohai-llm]
 # api_key = ""  # or via "VALOHAI_LLM_API_KEY" env var

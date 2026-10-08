@@ -1,5 +1,5 @@
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +10,8 @@ pub struct Config {
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(rename = "valohai-llm")]
     pub valohai_llm: ValohaiLlmConfig,
+    /// Model name prefix -> rates; checked before the built-in pricing table.
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 impl Default for Config {
@@ -18,6 +20,7 @@ impl Default for Config {
             listen: "127.0.0.1:8080".to_string(),
             providers: HashMap::new(),
             valohai_llm: ValohaiLlmConfig::default(),
+            pricing: HashMap::new(),
         }
     }
 }
@@ -78,6 +81,13 @@ impl Config {
             self.valohai_llm.api_key = llm_api_key;
         }
     }
+}
+
+/// USD per million tokens, the same shape as an entry in `pricing.json`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ModelPricing {
+    pub input: f64,
+    pub output: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -232,6 +242,24 @@ url = "http://localhost:1234/"
         assert_eq!(config.valohai_llm.api_key, "MY_KEY_123");
         assert_eq!(config.valohai_llm.url, "http://localhost:1234");
         assert!(config.valohai_llm.enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_pricing() -> anyhow::Result<()> {
+        let toml = r#"
+[pricing."jev-"]
+input = 0.042
+output = 0.0
+"#;
+        let config = Config::from_toml_str(toml)?;
+        assert_eq!(
+            config.pricing["jev-"],
+            ModelPricing {
+                input: 0.042,
+                output: 0.0
+            }
+        );
         Ok(())
     }
 

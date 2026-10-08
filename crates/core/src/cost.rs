@@ -1,8 +1,10 @@
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
 use serde_json::Value;
 
 use crate::Provider;
+use crate::config::ModelPricing;
 
 const FALLBACK_PRICING_JSON: &str = include_str!("../pricing.json");
 
@@ -10,9 +12,23 @@ static FALLBACK_PRICING: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(FALLBACK_PRICING_JSON).expect("invalid fallback pricing.json")
 });
 
-#[rustfmt::skip]
+// NB: process-wide and set once at startup, so storage and the dashboard need no plumbing;
+// pass it through `Storages` if one process ever needs two price tables
+static CUSTOM_PRICING: OnceLock<Value> = OnceLock::new();
+
+/// Use the `[pricing]` table of `conduit.toml` before the built-in one. Only the first call counts.
+pub fn set_custom_pricing(pricing: &HashMap<String, ModelPricing>) {
+    let table = serde_json::to_value(pricing).expect("prices serialize to JSON");
+    let _ = CUSTOM_PRICING.set(table);
+}
+
 pub fn estimate_cost(provider: Provider, model: &str, usage: &Value) -> Option<f64> {
-    let rates = lookup_rates(provider, model)?;
+    estimate_cost_with(CUSTOM_PRICING.get(), provider, model, usage)
+}
+
+#[rustfmt::skip]
+fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, usage: &Value) -> Option<f64> {
+    let rates = lookup_rates(custom, provider, model)?;
 
     let input_tokens = usage
         // OpenAI Responses, Anthropic Messages
@@ -74,7 +90,8 @@ pub fn estimate_cost(provider: Provider, model: &str, usage: &Value) -> Option<f
 
         // TODO: https://platform.claude.com/docs/en/about-claude/pricing#tool-use-pricing
         //
-        // TODO: support custom pricing rates https://platform.claude.com/docs/en/about-claude/pricing#volume-discounts
+        // volume discounts: set your own rates in the `[pricing]` table of `conduit.toml`
+        // https://platform.claude.com/docs/en/about-claude/pricing#volume-discounts
 
         // https://platform.claude.com/docs/en/about-claude/pricing#data-residency-pricing
         // > US-only inference via the `inference_geo` parameter incurs a 1.1x multiplier on all token pricing categories
@@ -101,7 +118,12 @@ struct PriceRates {
     output: f64, // dollars per Mtok
 }
 
-fn lookup_rates(provider: Provider, model: &str) -> Option<PriceRates> {
+fn lookup_rates(custom: Option<&Value>, provider: Provider, model: &str) -> Option<PriceRates> {
+    // configured prices win, even over a longer built-in match
+    if let Some(rates) = custom.and_then(|table| lookup_in_provider(table, model)) {
+        return Some(rates);
+    }
+
     let provider_key = provider.to_string().to_lowercase();
     if let Some(rates) = lookup_in_provider(&FALLBACK_PRICING[&provider_key], model) {
         return Some(rates);
@@ -209,6 +231,29 @@ mod tests {
         let usage = json!({"prompt_tokens": 1_000_000, "completion_tokens": 2_000_000});
         let cost = estimate_cost(Provider::OpenAI, "gpt-4.1", &usage).unwrap();
         assert_eq!(cost, 2.0 + (8.0 * 2.0));
+    }
+
+    #[test]
+    fn configured_prefix_prices_unknown_model() {
+        let custom = json!({"jev-": {"input": 0.042, "output": 0.0}});
+        let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
+        let cost = estimate_cost_with(Some(&custom), Provider::Unknown, "jev-1.13.0", &usage);
+        assert_eq!(cost, Some(0.042));
+    }
+
+    #[test]
+    fn configured_price_overrides_built_in() {
+        let custom = json!({"gpt-": {"input": 1.0, "output": 1.0}}); // shorter than the built-in "gpt-4.1"
+        let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
+        let cost = estimate_cost_with(Some(&custom), Provider::OpenAI, "gpt-4.1", &usage);
+        assert_eq!(cost, Some(3.0));
+    }
+
+    #[test]
+    fn unknown_model_without_configured_price_returns_none() {
+        let custom = json!({"jev-": {"input": 0.042, "output": 0.0}});
+        let usage = json!({"input_tokens": 100, "output_tokens": 50});
+        assert!(estimate_cost_with(Some(&custom), Provider::Unknown, "llama-3", &usage).is_none());
     }
 
     #[test]

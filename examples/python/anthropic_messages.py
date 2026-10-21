@@ -8,7 +8,7 @@ import os
 from anthropic import Anthropic
 
 # set `ANTHROPIC_BASE_URL` environment variable or supply `base_url` to client
-# that points to the proxy address + [providers.<key>] path from conduit.yaml
+# that points to the proxy address + [providers.<key>] path from conduit.toml
 base_url = os.environ.get("ANTHROPIC_BASE_URL", "http://localhost:8080/anthropic")
 client = Anthropic(base_url=base_url)
 

@@ -8,7 +8,7 @@ import os
 from openai import OpenAI
 
 # set `OPENAI_BASE_URL` environment variable or supply `base_url` to client
-# that points to the proxy address + [providers.<key>] path from conduit.yaml
+# that points to the proxy address + [providers.<key>] path from conduit.toml
 # + /v1 suffix
 base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080/openai/v1")
 client = OpenAI(base_url=base_url)

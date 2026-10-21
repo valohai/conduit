@@ -6,8 +6,8 @@ use conduit_core::{
     Direction, IdentityDeclaration, Provider, TransitPage, TransitQuery, TransitRecord,
     TransitStorage, UsageDeclaration,
 };
-use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{AssertSqlSafe, Row};
 use uuid::Uuid;
 
 pub struct SqliteTransitStorage {
@@ -249,7 +249,9 @@ impl TransitStorage for SqliteTransitStorage {
                  ORDER BY i.stored_at ASC",
                 placeholders
             );
-            let mut query = sqlx::query(&sql);
+
+            // safe as only `?` placeholders are interpolated
+            let mut query = sqlx::query(AssertSqlSafe(sql));
             for id in &transit_ids {
                 query = query.bind(id.to_string());
             }
@@ -305,7 +307,9 @@ impl TransitStorage for SqliteTransitStorage {
             );
 
             let now = format_timestamp(&chrono::Utc::now());
-            let mut query = sqlx::query(&sql).bind(&now);
+
+            // safe as only `?` placeholders are interpolated
+            let mut query = sqlx::query(AssertSqlSafe(sql)).bind(&now);
             for id in &transit_ids {
                 query = query.bind(id.to_string());
             }

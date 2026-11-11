@@ -124,10 +124,11 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
         }
 
         // https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing
-        // > 6x standard rates
         // > Fast mode pricing stacks with other pricing modifiers [prompt caching, data residency]
+        // every model with fast mode bills it at 2x its standard input and output price:
+        // Fable 5.2 and Mythos 5.2 16 / 80, Opus 5.5 8 / 40, Opus 5 and Opus 4.8 10 / 50
         if let Some(speed) = usage.get("speed") && speed.as_str() == Some("fast") {
-                cost *= 6.0;
+                cost *= 2.0;
         }
     }
 
@@ -309,10 +310,10 @@ mod tests {
 
     #[test]
     fn anthropic_compounding_multipliers() {
-        let model = "claude-opus-4-6";
+        let model = "claude-opus-5-5";
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
         let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
-        let baseline = 5.0 + (25.0 * 2.0);
+        let baseline = 4.0 + (20.0 * 2.0);
         assert_eq!(cost, baseline);
 
         let usage =
@@ -322,7 +323,7 @@ mod tests {
 
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000, "inference_geo": "us", "speed": "fast"});
         let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
-        assert_eq!(cost, baseline * 1.1 * 6.0);
+        assert_eq!(cost, baseline * 1.1 * 2.0);
     }
 
     #[test]

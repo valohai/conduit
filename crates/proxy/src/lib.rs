@@ -3,6 +3,7 @@ mod inspect;
 mod sync;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Extension;
 use axum::Router;
@@ -33,6 +34,12 @@ const STRIPPED_REQUEST_HEADERS: &[&str] = &["host", "accept-encoding"];
 
 // the following hop-by-hop headers should not be forwarded downstream
 const STRIPPED_RESPONSE_HEADERS: &[&str] = &["transfer-encoding", "connection", "keep-alive"];
+
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+// the same timeout bounds the wait for a unary response's headers, which can take minutes on
+// a long non-streaming request; there is no total deadline, as a stream has no known length
+const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct AppState {
     pub http_client: reqwest::Client,
@@ -65,9 +72,7 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppState {
-        http_client: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300)) // TODO: make configurable, and handle better with SSE?
-            .build()?,
+        http_client: upstream_client(UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_IDLE_TIMEOUT)?,
         report_tx,
     });
     let app = build_router(&config, state);
@@ -190,7 +195,11 @@ async fn proxy_handler(
             Framer::unary()
         };
 
-        while let Some(chunk) = stream.next().await {
+        // a client leaving would otherwise go unnoticed until upstream sends again
+        while let Some(chunk) = tokio::select! {
+            chunk = stream.next() => chunk,
+            _ = tx.closed() => None,
+        } {
             match chunk {
                 Ok(bytes) => {
                     for frame in framer.process_chunk(&bytes) {
@@ -252,6 +261,16 @@ async fn proxy_handler(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
+fn upstream_client(
+    connect_timeout: Duration,
+    idle_timeout: Duration,
+) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(idle_timeout)
+        .build()
+}
+
 async fn health() -> (StatusCode, &'static str) {
     (StatusCode::OK, "OK")
 }
@@ -261,9 +280,13 @@ pub(crate) mod testutil {
     use super::*;
 
     pub fn test_state() -> Arc<AppState> {
+        test_state_with_client(reqwest::Client::new())
+    }
+
+    pub fn test_state_with_client(http_client: reqwest::Client) -> Arc<AppState> {
         let (report_tx, _report_rx) = mpsc::unbounded_channel();
         Arc::new(AppState {
-            http_client: reqwest::Client::new(),
+            http_client,
             report_tx,
         })
     }
@@ -334,7 +357,8 @@ mod tests {
 #[cfg(test)]
 mod tests_openai_chat_completions {
     use super::*;
-    use crate::testutil::test_state;
+    use crate::inspect::ReportPayload;
+    use crate::testutil::test_state_with_client;
     use axum::body::Body;
     use axum::extract::Request;
     use conduit_core::ProviderConfig;
@@ -344,6 +368,14 @@ mod tests_openai_chat_completions {
     use tower::ServiceExt;
 
     async fn stub_app() -> Router {
+        stub_app_with_client(reqwest::Client::new()).await
+    }
+
+    async fn stub_app_with_client(http_client: reqwest::Client) -> Router {
+        stub_app_with_state(test_state_with_client(http_client)).await
+    }
+
+    async fn stub_app_with_state(state: Arc<AppState>) -> Router {
         let config = Config {
             listen: "127.0.0.1:0".into(),
             providers: HashMap::from([(
@@ -354,7 +386,7 @@ mod tests_openai_chat_completions {
             )]),
             ..Config::default()
         };
-        build_router(&config, test_state())
+        build_router(&config, state)
     }
 
     async fn stub_upstream() -> String {
@@ -362,6 +394,11 @@ mod tests_openai_chat_completions {
             .route(
                 "/v1/chat/completions",
                 axum::routing::post(stub_openai_chat_completions),
+            )
+            .route("/v1/slow-stream", axum::routing::post(stub_slow_stream))
+            .route(
+                "/v1/stalled-stream",
+                axum::routing::post(stub_stalled_stream),
             )
             .fallback(|| async { (StatusCode::NOT_FOUND, "not found") });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -573,6 +610,93 @@ mod tests_openai_chat_completions {
         assert_eq!(last_json["usage"]["total_tokens"], 29);
 
         assert!(body_str.ends_with("data: [DONE]\n\n"));
+        Ok(())
+    }
+
+    fn sse_response(
+        stream: impl futures_util::Stream<Item = std::io::Result<String>> + Send + 'static,
+    ) -> Response {
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(stream))
+            .unwrap()
+    }
+
+    async fn stub_slow_stream() -> Response {
+        sse_response(async_stream::stream! {
+            for i in 0..5 {
+                if i > 0 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                yield Ok(format!("data: {i}\n\n"));
+            }
+        })
+    }
+
+    const STALLED_STREAM_FIRST_CHUNK: &str = "data: {\"usage\":{\"prompt_tokens\":19}}\n\n";
+
+    async fn stub_stalled_stream() -> Response {
+        sse_response(async_stream::stream! {
+            yield Ok(STALLED_STREAM_FIRST_CHUNK.to_string());
+            std::future::pending::<()>().await;
+        })
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_lets_a_long_stream_finish() -> anyhow::Result<()> {
+        // the stream lasts 800 ms in total, but no gap reaches the timeout
+        let client = upstream_client(UPSTREAM_CONNECT_TIMEOUT, Duration::from_millis(500))?;
+        let app = stub_app_with_client(client).await;
+
+        let resp = app
+            .oneshot(Request::post("/openai/v1/slow-stream").body(Body::empty())?)
+            .await?;
+
+        let body = resp.into_body().collect().await?.to_bytes();
+        assert_eq!(
+            std::str::from_utf8(&body)?,
+            "data: 0\n\ndata: 1\n\ndata: 2\n\ndata: 3\n\ndata: 4\n\n"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_ends_a_stalled_stream_with_an_error() -> anyhow::Result<()> {
+        let client = upstream_client(UPSTREAM_CONNECT_TIMEOUT, Duration::from_millis(100))?;
+        let app = stub_app_with_client(client).await;
+
+        let resp = app
+            .oneshot(Request::post("/openai/v1/stalled-stream").body(Body::empty())?)
+            .await?;
+
+        let mut body = resp.into_body();
+        let first = body.frame().await.unwrap()?.into_data().unwrap();
+        assert_eq!(first, STALLED_STREAM_FIRST_CHUNK);
+        assert!(body.frame().await.unwrap().is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_ends_when_the_client_leaves_a_stalled_stream() -> anyhow::Result<()> {
+        // no idle timeout, so only the client leaving can end the relay
+        let (report_tx, mut report_rx) = mpsc::unbounded_channel();
+        let state = Arc::new(AppState {
+            http_client: reqwest::Client::new(),
+            report_tx,
+        });
+        let app = stub_app_with_state(state).await;
+
+        let resp = app
+            .oneshot(Request::post("/openai/v1/stalled-stream").body(Body::empty())?)
+            .await?;
+
+        let mut body = resp.into_body();
+        body.frame().await.unwrap()?;
+        drop(body);
+
+        // the relay sends its reports only once it stops reading upstream
+        let report = report_rx.recv().await.unwrap();
+        assert!(matches!(report.payload, ReportPayload::Usage { .. }));
         Ok(())
     }
 }

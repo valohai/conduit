@@ -54,9 +54,32 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
     let input_tokens = input_tokens.unwrap_or(0);
     let output_tokens = output_tokens.unwrap_or(0);
 
+    let cache_read_tokens = usage
+        // Anthropic Messages
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let cache_write_tokens = usage
+        // Anthropic Messages
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // without an explicit TTL the API writes to the 5-minute cache, and a stream's TTL split
+    // covers only the writes before the first output token; server tools write 5-minute ones after it
+    let split = usage.get("cache_creation").filter(|s| s.is_object());
+    let split_tokens = |key: &str| split.and_then(|s| s.get(key)).and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_write_1h_tokens = split_tokens("ephemeral_1h_input_tokens");
+    let cache_write_5m_tokens = split_tokens("ephemeral_5m_input_tokens")
+        .max(cache_write_tokens.saturating_sub(cache_write_1h_tokens));
+
     let mut cost =
-          rates.input  * input_tokens  as f64 / 1_000_000.0
-        + rates.output * output_tokens as f64 / 1_000_000.0
+          rates.input          * input_tokens          as f64 / 1_000_000.0
+        + rates.output         * output_tokens         as f64 / 1_000_000.0
+        + rates.cached_input   * cache_read_tokens     as f64 / 1_000_000.0
+        + rates.cache_write_5m * cache_write_5m_tokens as f64 / 1_000_000.0
+        + rates.cache_write_1h * cache_write_1h_tokens as f64 / 1_000_000.0
     ;
 
     if provider == Provider::OpenAI {
@@ -84,7 +107,7 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
     }
 
     if provider == Provider::Anthropic {
-        // TODO: https://platform.claude.com/docs/en/about-claude/pricing#prompt-caching
+        // prompt caching rates are resolved in `parse_rates`, https://platform.claude.com/docs/en/about-claude/pricing#prompt-caching
 
         // TODO: https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
 
@@ -113,9 +136,18 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
     Some(cost)
 }
 
+// reads deviate on Opus 5.5 and Sonnet 5.5 (0.05x) and Fable 5.1, Fable 5.2, Mythos 5.1
+// and Mythos 5.2 (0.025x), so their price entries need an explicit `cached_input`
+const CACHED_INPUT_MULTIPLIER: f64 = 0.1;
+const CACHE_WRITE_5M_MULTIPLIER: f64 = 1.25;
+const CACHE_WRITE_1H_MULTIPLIER: f64 = 2.0;
+
 struct PriceRates {
     input: f64,  // dollars per MTok (million tokens)
     output: f64, // dollars per Mtok
+    cached_input: f64,
+    cache_write_5m: f64,
+    cache_write_1h: f64,
 }
 
 fn lookup_rates(custom: Option<&Value>, provider: Provider, model: &str) -> Option<PriceRates> {
@@ -160,9 +192,18 @@ fn lookup_in_provider(models: &Value, model: &str) -> Option<PriceRates> {
 }
 
 fn parse_rates(v: &Value) -> Option<PriceRates> {
+    let input = v.get("input")?.as_f64()?;
+    let rate_or = |key: &str, multiplier: f64| {
+        v.get(key)
+            .and_then(|r| r.as_f64())
+            .unwrap_or(input * multiplier)
+    };
     Some(PriceRates {
-        input: v.get("input")?.as_f64()?,
+        input,
         output: v.get("output")?.as_f64()?,
+        cached_input: rate_or("cached_input", CACHED_INPUT_MULTIPLIER),
+        cache_write_5m: rate_or("cache_write_5m", CACHE_WRITE_5M_MULTIPLIER),
+        cache_write_1h: rate_or("cache_write_1h", CACHE_WRITE_1H_MULTIPLIER),
     })
 }
 
@@ -272,5 +313,60 @@ mod tests {
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000, "inference_geo": "us", "speed": "fast"});
         let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
         assert_eq!(cost, baseline * 1.1 * 6.0);
+    }
+
+    #[test]
+    fn anthropic_cache_tokens_price_at_cache_rates() {
+        let usage = json!({
+            "input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000,
+            "cache_creation_input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+        });
+        let cost = estimate_cost(Provider::Anthropic, "claude-opus-4-6", &usage).unwrap();
+        assert_eq!(cost, 5.0 + 0.5 + 6.25 + 25.0);
+    }
+
+    #[test]
+    fn cache_writes_split_by_ttl() {
+        let usage = json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 2_000_000,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 1_000_000,
+                "ephemeral_1h_input_tokens": 1_000_000,
+            },
+        });
+        let cost = estimate_cost(Provider::Anthropic, "claude-opus-4-6", &usage).unwrap();
+        assert_eq!(cost, 6.25 + 10.0);
+
+        // simulate a stream where a server tool wrote to the cache after `message_start`
+        let usage = json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 3_000_000,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 1_000_000,
+                "ephemeral_1h_input_tokens": 1_000_000,
+            },
+        });
+        let cost = estimate_cost(Provider::Anthropic, "claude-opus-4-6", &usage).unwrap();
+        assert_eq!(cost, 12.5 + 10.0);
+    }
+
+    #[test]
+    fn configured_cache_rates_override_the_multipliers() {
+        let custom = json!({
+            "jev-": {"input": 4.0, "output": 0.0, "cached_input": 0.2},
+            "kuu-": {"input": 4.0, "output": 0.0},
+        });
+        let usage = json!({"input_tokens": 0, "cache_read_input_tokens": 1_000_000});
+
+        let cost = estimate_cost_with(Some(&custom), Provider::Unknown, "jev-1", &usage);
+        assert_eq!(cost, Some(0.2));
+
+        let cost = estimate_cost_with(Some(&custom), Provider::Unknown, "kuu-1", &usage);
+        assert_eq!(cost, Some(0.4));
     }
 }

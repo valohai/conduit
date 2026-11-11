@@ -234,6 +234,16 @@ mod tests {
     }
 
     #[test]
+    fn claude_models_price_from_their_own_rows() {
+        let usage = json!({"input_tokens": 1_000_000});
+        let cost = |model| estimate_cost(Provider::Anthropic, model, &usage);
+        assert_eq!(cost("claude-opus-5-5"), Some(4.0));
+        assert_eq!(cost("claude-opus-5-20260101"), Some(5.0));
+        // also matches "claude-opus-4", which is priced at 15.0
+        assert_eq!(cost("claude-opus-4-8"), Some(5.0));
+    }
+
+    #[test]
     fn partial_tokens_are_fine() {
         let usage = json!({"input_tokens": 1_000_000});
         let cost = estimate_cost(Provider::OpenAI, "gpt-4.1", &usage).unwrap();

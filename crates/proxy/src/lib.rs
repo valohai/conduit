@@ -35,12 +35,6 @@ const STRIPPED_REQUEST_HEADERS: &[&str] = &["host", "accept-encoding"];
 // the following hop-by-hop headers should not be forwarded downstream
 const STRIPPED_RESPONSE_HEADERS: &[&str] = &["transfer-encoding", "connection", "keep-alive"];
 
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-// the same timeout bounds the wait for a unary response's headers, which can take minutes on
-// a long non-streaming request; there is no total deadline, as a stream has no known length
-const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-
 pub struct AppState {
     pub http_client: reqwest::Client,
     pub report_tx: mpsc::UnboundedSender<Report>,
@@ -72,7 +66,10 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppState {
-        http_client: upstream_client(UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_IDLE_TIMEOUT)?,
+        http_client: upstream_client(
+            config.upstream.connect_timeout(),
+            config.upstream.idle_timeout(),
+        )?,
         report_tx,
     });
     let app = build_router(&config, state);
@@ -262,13 +259,17 @@ async fn proxy_handler(
 }
 
 fn upstream_client(
-    connect_timeout: Duration,
-    idle_timeout: Duration,
+    connect_timeout: Option<Duration>,
+    idle_timeout: Option<Duration>,
 ) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(connect_timeout)
-        .read_timeout(idle_timeout)
-        .build()
+    let mut builder = reqwest::Client::builder();
+    if let Some(connect_timeout) = connect_timeout {
+        builder = builder.connect_timeout(connect_timeout);
+    }
+    if let Some(idle_timeout) = idle_timeout {
+        builder = builder.read_timeout(idle_timeout);
+    }
+    builder.build()
 }
 
 async fn health() -> (StatusCode, &'static str) {
@@ -645,7 +646,7 @@ mod tests_openai_chat_completions {
     #[tokio::test]
     async fn idle_timeout_lets_a_long_stream_finish() -> anyhow::Result<()> {
         // the stream lasts 800 ms in total, but no gap reaches the timeout
-        let client = upstream_client(UPSTREAM_CONNECT_TIMEOUT, Duration::from_millis(500))?;
+        let client = upstream_client(None, Some(Duration::from_millis(500)))?;
         let app = stub_app_with_client(client).await;
 
         let resp = app
@@ -662,7 +663,7 @@ mod tests_openai_chat_completions {
 
     #[tokio::test]
     async fn idle_timeout_ends_a_stalled_stream_with_an_error() -> anyhow::Result<()> {
-        let client = upstream_client(UPSTREAM_CONNECT_TIMEOUT, Duration::from_millis(100))?;
+        let client = upstream_client(None, Some(Duration::from_millis(100)))?;
         let app = stub_app_with_client(client).await;
 
         let resp = app

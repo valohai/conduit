@@ -56,6 +56,14 @@ output = 0.0
 
 `input` and `output` are required. The optional `cached_input`, `cache_write_5m` and `cache_write_1h` price prompt cache reads and 5-minute and 1-hour cache writes, and default to 0.1x, 1.25x and 2x of `input`; set them for models whose cache rates differ.
 
+Requests to providers have no total time limit, so long streamed responses are never cut. Instead, an optional `[upstream]` table sets how long Conduit waits to connect and how long a response may go without sending any data, in seconds; `0` disables either one:
+
+```toml
+[upstream]
+connect_timeout_s = 10   # default
+idle_timeout_s = 600     # default
+```
+
 Once a configuration file exists, you can run Conduit in your working directory with the command:
 
 ```shell

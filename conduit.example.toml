@@ -23,6 +23,9 @@ upstream = "https://httpbin.org/"
 # [pricing."jev-"]
 # input = 0.042
 # output = 0.0
+# cached_input = 0.0042    # optional, defaults to 0.1x of input
+# cache_write_5m = 0.0525  # optional, defaults to 1.25x of input
+# cache_write_1h = 0.084   # optional, defaults to 2x of input
 
 # uncomment and fill for https://llm.valohai.com/ integration:
 # [valohai-llm]

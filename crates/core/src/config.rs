@@ -43,10 +43,19 @@ impl Config {
     ) -> anyhow::Result<Self> {
         match explicit_path.or_else(|| read_env_var(CONFIG_ENV_VAR).map(PathBuf::from)) {
             Some(path) => Self::from_path(&path, read_env_var),
-            None => match Self::from_path(Path::new("conduit.toml"), &read_env_var) {
-                Ok(config) => Ok(config),
-                Err(_) => Ok(Self::from_toml_str("", read_env_var)?),
-            },
+            None => Self::from_path_if_exists(Path::new("conduit.toml"), read_env_var),
+        }
+    }
+
+    fn from_path_if_exists(
+        path: &Path,
+        read_env_var: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        match std::fs::read_to_string(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Self::from_toml_str("", read_env_var)?)
+            }
+            _ => Self::from_path(path, read_env_var),
         }
     }
 
@@ -56,7 +65,8 @@ impl Config {
     ) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        Self::from_toml_str(&contents, read_env_var).map_err(Into::into)
+        Self::from_toml_str(&contents, read_env_var)
+            .with_context(|| format!("failed to parse {}", path.display()))
     }
 
     fn from_toml_str(
@@ -222,6 +232,19 @@ upstream = "https://api.anthropic.com"
     fn from_path_missing_file() {
         let result = Config::from_path(Path::new("/nonexistent/conduit.toml"), |_| None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn optional_config_file_defaults_only_when_missing() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conduit.toml");
+
+        let config = Config::from_path_if_exists(&path, |_| None)?;
+        assert_eq!(config, Config::default());
+
+        std::fs::write(&path, "listen = [[[invalid")?;
+        assert!(Config::from_path_if_exists(&path, |_| None).is_err());
+        Ok(())
     }
 
     #[test]

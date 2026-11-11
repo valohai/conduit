@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Config {
     pub listen: String,
+    pub database: PathBuf,
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(rename = "valohai-llm")]
     pub valohai_llm: ValohaiLlmConfig,
@@ -18,6 +19,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:8080".to_string(),
+            database: PathBuf::from("conduit.db"),
             providers: HashMap::new(),
             valohai_llm: ValohaiLlmConfig::default(),
             pricing: HashMap::new(),
@@ -26,33 +28,47 @@ impl Default for Config {
 }
 
 pub const CONFIG_ENV_VAR: &str = "CONDUIT_CONFIG";
+pub const DATABASE_ENV_VAR: &str = "CONDUIT_DATABASE";
 pub const LLM_URL_ENV_VAR: &str = "VALOHAI_LLM_URL";
 pub const LLM_API_KEY_ENV_VAR: &str = "VALOHAI_LLM_API_KEY";
 
 impl Config {
     pub fn load(explicit_path: Option<PathBuf>) -> anyhow::Result<Self> {
-        match explicit_path.or_else(|| std::env::var(CONFIG_ENV_VAR).ok().map(PathBuf::from)) {
-            Some(path) => Self::from_path(&path),
-            None => match Self::from_path(Path::new("conduit.toml")) {
+        Self::load_with_env(explicit_path, |name| std::env::var(name).ok())
+    }
+
+    fn load_with_env(
+        explicit_path: Option<PathBuf>,
+        read_env_var: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        match explicit_path.or_else(|| read_env_var(CONFIG_ENV_VAR).map(PathBuf::from)) {
+            Some(path) => Self::from_path(&path, read_env_var),
+            None => match Self::from_path(Path::new("conduit.toml"), &read_env_var) {
                 Ok(config) => Ok(config),
-                Err(_) => Ok(Self::default()),
+                Err(_) => Ok(Self::from_toml_str("", read_env_var)?),
             },
         }
     }
 
-    fn from_path(path: &Path) -> anyhow::Result<Self> {
+    fn from_path(
+        path: &Path,
+        read_env_var: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        Self::from_toml_str(&contents).map_err(Into::into)
+        Self::from_toml_str(&contents, read_env_var).map_err(Into::into)
     }
 
-    fn from_toml_str(s: &str) -> Result<Self, toml::de::Error> {
+    fn from_toml_str(
+        s: &str,
+        read_env_var: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::from_str(s)?;
-        config.post_load();
+        config.post_load(read_env_var);
         Ok(config)
     }
 
-    fn post_load(&mut self) {
+    fn post_load(&mut self, read_env_var: impl Fn(&str) -> Option<String>) {
         // apply env var overrides, then normalize values
 
         if self.listen.starts_with(':') {
@@ -62,22 +78,20 @@ impl Config {
             provider.upstream = provider.upstream.trim_end_matches('/').to_string();
         }
 
-        self.apply_overrides_from_env_vars();
+        self.apply_overrides_from_env_vars(read_env_var);
         self.valohai_llm.url = self.valohai_llm.url.trim_end_matches('/').to_string();
     }
 
-    fn apply_overrides_from_env_vars(&mut self) {
-        let env_llm_url = std::env::var(LLM_URL_ENV_VAR)
-            .ok()
-            .filter(|s| !s.is_empty());
-        if let Some(llm_url) = env_llm_url {
+    fn apply_overrides_from_env_vars(&mut self, read_env_var: impl Fn(&str) -> Option<String>) {
+        let read_non_empty = |name| read_env_var(name).filter(|s| !s.is_empty());
+
+        if let Some(database) = read_non_empty(DATABASE_ENV_VAR) {
+            self.database = PathBuf::from(database);
+        }
+        if let Some(llm_url) = read_non_empty(LLM_URL_ENV_VAR) {
             self.valohai_llm.url = llm_url;
         }
-
-        let env_llm_api_key = std::env::var(LLM_API_KEY_ENV_VAR)
-            .ok()
-            .filter(|s| !s.is_empty());
-        if let Some(llm_api_key) = env_llm_api_key {
+        if let Some(llm_api_key) = read_non_empty(LLM_API_KEY_ENV_VAR) {
             self.valohai_llm.api_key = llm_api_key;
         }
     }
@@ -132,7 +146,7 @@ mod tests {
         let toml = r#"
 listen = "127.0.0.1:9090"
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(config.listen, "127.0.0.1:9090");
         assert!(config.providers.is_empty());
         Ok(())
@@ -147,7 +161,7 @@ upstream = "https://api.openai.com"
 [providers.anthropic]
 upstream = "https://api.anthropic.com"
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(config.providers.len(), 2);
         assert_eq!(
             config.providers["openai"].upstream,
@@ -162,28 +176,57 @@ upstream = "https://api.anthropic.com"
 
     #[test]
     fn listen_shorthand_port_only() -> anyhow::Result<()> {
-        let config = Config::from_toml_str(r#"listen = ":9090""#)?;
+        let config = Config::from_toml_str(r#"listen = ":9090""#, |_| None)?;
         assert_eq!(config.listen, "127.0.0.1:9090");
         Ok(())
     }
 
     #[test]
     fn defaults_when_empty() -> anyhow::Result<()> {
-        let config = Config::from_toml_str("")?;
+        let config = Config::from_toml_str("", |_| None)?;
         assert_eq!(config.listen, "127.0.0.1:8080");
+        assert_eq!(config.database, Path::new("conduit.db"));
         assert!(config.providers.is_empty());
         Ok(())
     }
 
     #[test]
+    fn parse_database() -> anyhow::Result<()> {
+        let config =
+            Config::from_toml_str(r#"database = "/var/lib/conduit/conduit.db""#, |_| None)?;
+        assert_eq!(config.database, Path::new("/var/lib/conduit/conduit.db"));
+        Ok(())
+    }
+
+    #[test]
+    fn database_env_var_overrides_config_file() -> anyhow::Result<()> {
+        let config =
+            Config::from_toml_str(r#"database = "/var/lib/conduit/conduit.db""#, |name| {
+                (name == DATABASE_ENV_VAR).then(|| "/tmp/conduit-test/conduit.db".to_string())
+            })?;
+        assert_eq!(config.database, Path::new("/tmp/conduit-test/conduit.db"));
+        Ok(())
+    }
+
+    #[test]
+    fn database_env_var_applies_without_config_file() -> anyhow::Result<()> {
+        // tests run in the crate directory, which has no `conduit.toml`
+        let config = Config::load_with_env(None, |name| {
+            (name == DATABASE_ENV_VAR).then(|| "/tmp/conduit-test/conduit.db".to_string())
+        })?;
+        assert_eq!(config.database, Path::new("/tmp/conduit-test/conduit.db"));
+        Ok(())
+    }
+
+    #[test]
     fn from_path_missing_file() {
-        let result = Config::from_path(Path::new("/nonexistent/conduit.toml"));
+        let result = Config::from_path(Path::new("/nonexistent/conduit.toml"), |_| None);
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_invalid_toml() {
-        let result = Config::from_toml_str("listen = [[[invalid");
+        let result = Config::from_toml_str("listen = [[[invalid", |_| None);
         assert!(result.is_err());
     }
 
@@ -193,7 +236,7 @@ upstream = "https://api.anthropic.com"
 [providers.openai]
 upstream = "https://api.openai.com/"
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(
             config.providers["openai"].upstream,
             "https://api.openai.com"
@@ -219,7 +262,7 @@ upstream = "https://api.openai.com/"
 
     #[test]
     fn valohai_llm_integration_disabled_by_default() -> anyhow::Result<()> {
-        let config = Config::from_toml_str("")?;
+        let config = Config::from_toml_str("", |_| None)?;
         assert!(!config.valohai_llm.enabled());
         Ok(())
     }
@@ -230,7 +273,7 @@ upstream = "https://api.openai.com/"
 [valohai-llm]
 api_key = "MY_KEY_123"
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(config.valohai_llm.api_key, "MY_KEY_123");
         assert_eq!(config.valohai_llm.url, "https://llm.valohai.com");
         assert!(config.valohai_llm.enabled());
@@ -244,7 +287,7 @@ api_key = "MY_KEY_123"
 api_key = "MY_KEY_123"
 url = "http://localhost:1234/"
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(config.valohai_llm.api_key, "MY_KEY_123");
         assert_eq!(config.valohai_llm.url, "http://localhost:1234");
         assert!(config.valohai_llm.enabled());
@@ -258,7 +301,7 @@ url = "http://localhost:1234/"
 input = 0.042
 output = 0.0
 "#;
-        let config = Config::from_toml_str(toml)?;
+        let config = Config::from_toml_str(toml, |_| None)?;
         assert_eq!(
             config.pricing["jev-"],
             ModelPricing {

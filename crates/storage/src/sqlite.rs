@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 
 use conduit_core::{
@@ -15,11 +16,19 @@ pub struct SqliteTransitStorage {
 }
 
 impl SqliteTransitStorage {
+    pub async fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::with_options(SqliteConnectOptions::new().filename(path)).await
+    }
+
     pub async fn new(database_url: &str) -> anyhow::Result<Self> {
-        let options = database_url
-            .parse::<SqliteConnectOptions>()?
+        Self::with_options(database_url.parse()?).await
+    }
+
+    async fn with_options(options: SqliteConnectOptions) -> anyhow::Result<Self> {
+        let options = options
             .journal_mode(SqliteJournalMode::Wal)
             .create_if_missing(true);
+        let filename = options.get_filename().to_owned();
 
         let pool = SqlitePoolOptions::new()
             .max_connections(10)
@@ -66,7 +75,7 @@ impl SqliteTransitStorage {
         .execute(&pool)
         .await?;
 
-        tracing::debug!(%database_url, "storage initialized");
+        tracing::debug!(filename = %filename.display(), "storage initialized");
 
         Ok(Self { pool })
     }
@@ -392,6 +401,16 @@ mod tests {
 
     async fn test_storage() -> SqliteTransitStorage {
         SqliteTransitStorage::new("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn open_takes_the_path_literally() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        // characters that a `sqlite:` URL would read as a query, an escape or a scheme
+        let path = dir.path().join("a%20b?mode=memory.db");
+        SqliteTransitStorage::open(&path).await?;
+        assert!(path.exists());
+        Ok(())
     }
 
     async fn seed_transit_records(

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -76,8 +77,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!(?config, "config loaded");
     conduit_core::cost::set_custom_pricing(&config.pricing);
 
-    // TODO: make database path configurable; defaulting to "conduit.db"
-    let transit_storage = conduit_storage::SqliteTransitStorage::new("sqlite:conduit.db").await?;
+    let transit_storage = conduit_storage::SqliteTransitStorage::open(&config.database)
+        .await
+        .with_context(|| format!("failed to open database {}", config.database.display()))?;
     let storages = conduit_core::Storages {
         transit: Arc::new(transit_storage),
     };

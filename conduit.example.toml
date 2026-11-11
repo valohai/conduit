@@ -2,6 +2,7 @@
 # rename as `conduit.toml` for development.
 
 listen = "127.0.0.1:8080"
+# database = "conduit.db"  # or via "CONDUIT_DATABASE" env var, relative to the working directory
 
 # Each provider gets a proxy route prefix by the provider map key like "openai".
 # The proxy strips the prefix before forwarding.

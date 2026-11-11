@@ -1023,10 +1023,10 @@ impl App {
                     self.transit_table_state.select(Some(next));
                     self.request_older_records_if_needed();
                 }
-                event::MouseEventKind::Down(event::MouseButton::Left) => {
-                    if self.is_log_close_hit(mouse.column, mouse.row) {
-                        self.clear_logs();
-                    }
+                event::MouseEventKind::Down(event::MouseButton::Left)
+                    if self.is_log_close_hit(mouse.column, mouse.row) =>
+                {
+                    self.clear_logs();
                 }
                 _ => {}
             },
@@ -1126,10 +1126,10 @@ impl App {
                 event::MouseEventKind::ScrollDown => {
                     self.transit_detail_scroll = self.transit_detail_scroll.saturating_add(3);
                 }
-                event::MouseEventKind::Down(event::MouseButton::Left) => {
-                    if self.is_log_close_hit(mouse.column, mouse.row) {
-                        self.clear_logs();
-                    }
+                event::MouseEventKind::Down(event::MouseButton::Left)
+                    if self.is_log_close_hit(mouse.column, mouse.row) =>
+                {
+                    self.clear_logs();
                 }
                 _ => {}
             },

@@ -74,6 +74,12 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
     let cache_write_5m_tokens = split_tokens("ephemeral_5m_input_tokens")
         .max(cache_write_tokens.saturating_sub(cache_write_1h_tokens));
 
+    let prompt_tokens = input_tokens + cache_read_tokens + cache_write_tokens;
+    let rates = match rates.long_prompt {
+        Some((threshold, long_rates)) if prompt_tokens > threshold => *long_rates,
+        _ => rates,
+    };
+
     let mut cost =
           rates.input          * input_tokens          as f64 / 1_000_000.0
         + rates.output         * output_tokens         as f64 / 1_000_000.0
@@ -149,6 +155,7 @@ struct PriceRates {
     cached_input: f64,
     cache_write_5m: f64,
     cache_write_1h: f64,
+    long_prompt: Option<(u64, Box<PriceRates>)>,
 }
 
 fn lookup_rates(custom: Option<&Value>, provider: Provider, model: &str) -> Option<PriceRates> {
@@ -205,6 +212,9 @@ fn parse_rates(v: &Value) -> Option<PriceRates> {
         cached_input: rate_or("cached_input", CACHED_INPUT_MULTIPLIER),
         cache_write_5m: rate_or("cache_write_5m", CACHE_WRITE_5M_MULTIPLIER),
         cache_write_1h: rate_or("cache_write_1h", CACHE_WRITE_1H_MULTIPLIER),
+        long_prompt: v
+            .get("long_prompt")
+            .and_then(|tier| Some((tier.get("tokens")?.as_u64()?, Box::new(parse_rates(tier)?)))),
     })
 }
 
@@ -379,5 +389,19 @@ mod tests {
 
         let cost = estimate_cost_with(Some(&custom), Provider::Unknown, "kuu-1", &usage);
         assert_eq!(cost, Some(0.4));
+    }
+
+    #[test]
+    fn haiku_5_5_long_prompts_pay_the_higher_tier() {
+        let model = "claude-haiku-5-5";
+
+        // cache reads count toward the prompt length
+        let usage = json!({"input_tokens": 0, "cache_read_input_tokens": 1_000_000, "output_tokens": 1_000_000});
+        let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
+        assert_eq!(cost, 2.5 + 0.05);
+
+        let usage = json!({"input_tokens": 50_000});
+        let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
+        assert_eq!(cost, 0.1 * 50_000.0 / 1_000_000.0);
     }
 }

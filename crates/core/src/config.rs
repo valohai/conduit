@@ -88,6 +88,12 @@ impl Config {
 pub struct ModelPricing {
     pub input: f64,
     pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -257,7 +263,10 @@ output = 0.0
             config.pricing["jev-"],
             ModelPricing {
                 input: 0.042,
-                output: 0.0
+                output: 0.0,
+                cached_input: None,
+                cache_write_5m: None,
+                cache_write_1h: None,
             }
         );
         Ok(())

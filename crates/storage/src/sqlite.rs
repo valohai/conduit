@@ -17,17 +17,29 @@ pub struct SqliteTransitStorage {
 
 impl SqliteTransitStorage {
     pub async fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::with_options(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await
+    }
+
+    pub async fn open_existing(path: &Path) -> anyhow::Result<Self> {
         Self::with_options(SqliteConnectOptions::new().filename(path)).await
     }
 
     pub async fn new(database_url: &str) -> anyhow::Result<Self> {
-        Self::with_options(database_url.parse()?).await
+        Self::with_options(
+            database_url
+                .parse::<SqliteConnectOptions>()?
+                .create_if_missing(true),
+        )
+        .await
     }
 
     async fn with_options(options: SqliteConnectOptions) -> anyhow::Result<Self> {
-        let options = options
-            .journal_mode(SqliteJournalMode::Wal)
-            .create_if_missing(true);
+        let options = options.journal_mode(SqliteJournalMode::Wal);
         let filename = options.get_filename().to_owned();
 
         let pool = SqlitePoolOptions::new()
@@ -410,6 +422,15 @@ mod tests {
         let path = dir.path().join("a%20b?mode=memory.db");
         SqliteTransitStorage::open(&path).await?;
         assert!(path.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_existing_does_not_create_a_missing_database() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conduit.db");
+        assert!(SqliteTransitStorage::open_existing(&path).await.is_err());
+        assert!(!path.exists());
         Ok(())
     }
 

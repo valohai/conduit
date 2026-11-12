@@ -28,6 +28,12 @@ upstream = "https://httpbin.org/"
 # cache_write_5m = 0.0525  # optional, defaults to 1.25x of input
 # cache_write_1h = 0.084   # optional, defaults to 2x of input
 
+# Timeouts for requests to providers, in seconds; 0 disables one. There is no total
+# deadline; the idle timeout ends a response that sends nothing for that long.
+# [upstream]
+# connect_timeout_s = 10
+# idle_timeout_s = 600
+
 # uncomment and fill for https://llm.valohai.com/ integration:
 # [valohai-llm]
 # api_key = ""  # or via "VALOHAI_LLM_API_KEY" env var

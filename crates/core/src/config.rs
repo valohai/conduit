@@ -2,6 +2,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default)]
@@ -13,6 +14,7 @@ pub struct Config {
     pub valohai_llm: ValohaiLlmConfig,
     /// Model name prefix -> rates; checked before the built-in pricing table.
     pub pricing: HashMap<String, ModelPricing>,
+    pub upstream: UpstreamConfig,
 }
 
 impl Default for Config {
@@ -23,7 +25,38 @@ impl Default for Config {
             providers: HashMap::new(),
             valohai_llm: ValohaiLlmConfig::default(),
             pricing: HashMap::new(),
+            upstream: UpstreamConfig::default(),
         }
+    }
+}
+
+/// Timeouts for the requests forwarded to providers, in seconds; zero disables one.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UpstreamConfig {
+    pub connect_timeout_s: u64,
+    pub idle_timeout_s: u64,
+}
+
+impl Default for UpstreamConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_s: 10,
+            // the same timeout bounds the wait for a unary response's headers, which can take
+            // minutes on a long non-streaming request; there is no total deadline, as a stream
+            // has no known length
+            idle_timeout_s: 600,
+        }
+    }
+}
+
+impl UpstreamConfig {
+    pub fn connect_timeout(&self) -> Option<Duration> {
+        (self.connect_timeout_s > 0).then(|| Duration::from_secs(self.connect_timeout_s))
+    }
+
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        (self.idle_timeout_s > 0).then(|| Duration::from_secs(self.idle_timeout_s))
     }
 }
 
@@ -213,6 +246,31 @@ upstream = "https://api.anthropic.com"
         assert_eq!(config.listen, "127.0.0.1:8080");
         assert_eq!(config.database, Path::new("conduit.db"));
         assert!(config.providers.is_empty());
+        assert_eq!(
+            config.upstream.connect_timeout(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            config.upstream.idle_timeout(),
+            Some(Duration::from_secs(600))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_upstream_timeouts() -> anyhow::Result<()> {
+        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 30")?;
+        assert_eq!(
+            config.upstream.connect_timeout(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            config.upstream.idle_timeout(),
+            Some(Duration::from_secs(30))
+        );
+
+        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 0")?;
+        assert_eq!(config.upstream.idle_timeout(), None);
         Ok(())
     }
 

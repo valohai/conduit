@@ -44,6 +44,12 @@ Create a `conduit.toml` file in your working directory, otherwise Conduit will n
 
 You can copy the example [from here](https://github.com/valohai/conduit/blob/main/conduit.example.toml) and adjust where Conduit will be listening to LLM calls and setup the providers you are using.
 
+Conduit records the LLM calls it proxies to a SQLite database, `conduit.db` in the working directory by default. Set `database` in `conduit.toml` or the `CONDUIT_DATABASE` environment variable to keep it elsewhere, like a state directory when running Conduit as a service. Conduit creates the file but not its directory. `conduit dashboard` reads the same setting, so point both at the same file:
+
+```toml
+database = "/var/lib/conduit/conduit.db"
+```
+
 Conduit can capture cost values from responses formatted in the common Anthropic (Messages API) and OpenAI (Responses & Chat Completions APIs) or similar responses from other models.
 
 Costs are estimated from a built-in price table of OpenAI and Anthropic models. For any other model (or your own rates), add a `[pricing]` table to `conduit.toml`; each key is a model name prefix, and these prices are checked first:

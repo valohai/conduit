@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -76,8 +77,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!(?config, "config loaded");
     conduit_core::cost::set_custom_pricing(&config.pricing);
 
-    // TODO: make database path configurable; defaulting to "conduit.db"
-    let transit_storage = conduit_storage::SqliteTransitStorage::new("sqlite:conduit.db").await?;
+    let transit_storage = if matches!(cmd, Commands::Dashboard { .. }) {
+        // an empty database here would hide that the proxy writes to another one
+        conduit_storage::SqliteTransitStorage::open_existing(&config.database).await
+    } else {
+        conduit_storage::SqliteTransitStorage::open(&config.database).await
+    }
+    .with_context(|| format!("failed to open database {}", config.database.display()))?;
     let storages = conduit_core::Storages {
         transit: Arc::new(transit_storage),
     };

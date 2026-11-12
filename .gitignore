@@ -1,4 +1,4 @@
-target/
+/target
 conduit.toml
 mise.local.toml
 .env

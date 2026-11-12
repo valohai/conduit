@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/valohai/conduit"
@@ -41,10 +41,10 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.29", features = ["v7"] }
-valohai-conduit-core = { version = "0.2.0", path = "crates/core" }
-valohai-conduit-proxy = { version = "0.2.0", path = "crates/proxy" }
-valohai-conduit-storage = { version = "0.2.0", path = "crates/storage" }
-valohai-conduit-tui = { version = "0.2.0", path = "crates/tui" }
+valohai-conduit-core = { version = "0.3.0", path = "crates/core" }
+valohai-conduit-proxy = { version = "0.3.0", path = "crates/proxy" }
+valohai-conduit-storage = { version = "0.3.0", path = "crates/storage" }
+valohai-conduit-tui = { version = "0.3.0", path = "crates/tui" }
 
 [workspace.lints.clippy]
 all = { level = "deny" }

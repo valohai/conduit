@@ -30,12 +30,13 @@ pub fn estimate_cost(provider: Provider, model: &str, usage: &Value) -> Option<f
 fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, usage: &Value) -> Option<f64> {
     let rates = lookup_rates(custom, provider, model)?;
 
-    let input_tokens = usage
+    let (input_tokens, input_details) = match usage.get("input_tokens") {
         // OpenAI Responses, Anthropic Messages
-        .get("input_tokens")
+        Some(tokens) => (Some(tokens), usage.get("input_tokens_details")),
         // OpenAI Chat Completions
-        .or_else(|| usage.get("prompt_tokens"))
-        .and_then(|v| v.as_u64());
+        None => (usage.get("prompt_tokens"), usage.get("prompt_tokens_details")),
+    };
+    let input_tokens = input_tokens.and_then(|v| v.as_u64());
 
     // NB: in general, internal "reasoning tokens" are already included in
     //     `output_tokens`, revise if it ain't so on a future API
@@ -53,6 +54,13 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
 
     let input_tokens = input_tokens.unwrap_or(0);
     let output_tokens = output_tokens.unwrap_or(0);
+
+    let cached_tokens = input_details
+        // OpenAI Responses, OpenAI Chat Completions; already counted in the input total
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let uncached_input_tokens = input_tokens.saturating_sub(cached_tokens);
 
     let cache_read_tokens = usage
         // Anthropic Messages
@@ -80,10 +88,15 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
         _ => rates,
     };
 
+    // OpenAI models without a `cached_input` rate give no discount, while Anthropic's reads always have one
+    let cached_rate = rates.cached_input.unwrap_or(rates.input);
+    let cache_read_rate = rates.cached_input.unwrap_or(rates.input * CACHED_INPUT_MULTIPLIER);
+
     let mut cost =
-          rates.input          * input_tokens          as f64 / 1_000_000.0
+          rates.input          * uncached_input_tokens as f64 / 1_000_000.0
         + rates.output         * output_tokens         as f64 / 1_000_000.0
-        + rates.cached_input   * cache_read_tokens     as f64 / 1_000_000.0
+        + cached_rate          * cached_tokens         as f64 / 1_000_000.0
+        + cache_read_rate      * cache_read_tokens     as f64 / 1_000_000.0
         + rates.cache_write_5m * cache_write_5m_tokens as f64 / 1_000_000.0
         + rates.cache_write_1h * cache_write_1h_tokens as f64 / 1_000_000.0
     ;
@@ -152,7 +165,7 @@ const CACHE_WRITE_1H_MULTIPLIER: f64 = 2.0;
 struct PriceRates {
     input: f64,  // dollars per MTok (million tokens)
     output: f64, // dollars per Mtok
-    cached_input: f64,
+    cached_input: Option<f64>,
     cache_write_5m: f64,
     cache_write_1h: f64,
     long_prompt: Option<(u64, Box<PriceRates>)>,
@@ -209,7 +222,7 @@ fn parse_rates(v: &Value) -> Option<PriceRates> {
     Some(PriceRates {
         input,
         output: v.get("output")?.as_f64()?,
-        cached_input: rate_or("cached_input", CACHED_INPUT_MULTIPLIER),
+        cached_input: v.get("cached_input").and_then(|r| r.as_f64()),
         cache_write_5m: rate_or("cache_write_5m", CACHE_WRITE_5M_MULTIPLIER),
         cache_write_1h: rate_or("cache_write_1h", CACHE_WRITE_1H_MULTIPLIER),
         long_prompt: v
@@ -293,6 +306,25 @@ mod tests {
         let usage = json!({"prompt_tokens": 1_000_000, "completion_tokens": 2_000_000});
         let cost = estimate_cost(Provider::OpenAI, "gpt-4.1", &usage).unwrap();
         assert_eq!(cost, 2.0 + (8.0 * 2.0));
+    }
+
+    #[test]
+    fn openai_cached_tokens_price_at_cached_input() {
+        let responses = json!({"input_tokens": 2_000_000, "input_tokens_details": {"cached_tokens": 1_000_000}});
+        let cost = estimate_cost(Provider::OpenAI, "gpt-4.1", &responses).unwrap();
+        assert_eq!(cost, 2.0 + 0.5);
+
+        let chat_completions = json!({"prompt_tokens": 2_000_000, "prompt_tokens_details": {"cached_tokens": 1_000_000}});
+        let cost = estimate_cost(Provider::OpenAI, "gpt-4.1", &chat_completions).unwrap();
+        assert_eq!(cost, 2.0 + 0.5);
+    }
+
+    #[test]
+    fn openai_cached_tokens_without_a_rate_cost_full_input() {
+        let usage =
+            json!({"input_tokens": 1_000_000, "input_tokens_details": {"cached_tokens": 500_000}});
+        let cost = estimate_cost(Provider::OpenAI, "gpt-5-pro", &usage).unwrap();
+        assert_eq!(cost, 15.0);
     }
 
     #[test]

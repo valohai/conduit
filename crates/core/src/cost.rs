@@ -74,6 +74,12 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
     let cache_write_5m_tokens = split_tokens("ephemeral_5m_input_tokens")
         .max(cache_write_tokens.saturating_sub(cache_write_1h_tokens));
 
+    let prompt_tokens = input_tokens + cache_read_tokens + cache_write_tokens;
+    let rates = match rates.long_prompt {
+        Some((threshold, long_rates)) if prompt_tokens > threshold => *long_rates,
+        _ => rates,
+    };
+
     let mut cost =
           rates.input          * input_tokens          as f64 / 1_000_000.0
         + rates.output         * output_tokens         as f64 / 1_000_000.0
@@ -124,10 +130,11 @@ fn estimate_cost_with(custom: Option<&Value>, provider: Provider, model: &str, u
         }
 
         // https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing
-        // > 6x standard rates
         // > Fast mode pricing stacks with other pricing modifiers [prompt caching, data residency]
+        // every model with fast mode bills it at 2x its standard input and output price:
+        // Fable 5.2 and Mythos 5.2 16 / 80, Opus 5.5 8 / 40, Opus 5 and Opus 4.8 10 / 50
         if let Some(speed) = usage.get("speed") && speed.as_str() == Some("fast") {
-                cost *= 6.0;
+                cost *= 2.0;
         }
     }
 
@@ -148,6 +155,7 @@ struct PriceRates {
     cached_input: f64,
     cache_write_5m: f64,
     cache_write_1h: f64,
+    long_prompt: Option<(u64, Box<PriceRates>)>,
 }
 
 fn lookup_rates(custom: Option<&Value>, provider: Provider, model: &str) -> Option<PriceRates> {
@@ -204,6 +212,9 @@ fn parse_rates(v: &Value) -> Option<PriceRates> {
         cached_input: rate_or("cached_input", CACHED_INPUT_MULTIPLIER),
         cache_write_5m: rate_or("cache_write_5m", CACHE_WRITE_5M_MULTIPLIER),
         cache_write_1h: rate_or("cache_write_1h", CACHE_WRITE_1H_MULTIPLIER),
+        long_prompt: v
+            .get("long_prompt")
+            .and_then(|tier| Some((tier.get("tokens")?.as_u64()?, Box::new(parse_rates(tier)?)))),
     })
 }
 
@@ -231,6 +242,16 @@ mod tests {
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
         let cost = estimate_cost(Provider::OpenAI, "gpt-5.4", &usage).unwrap(); // also matches "gpt-5"
         assert_eq!(cost, 2.5 + (15.0 * 2.0));
+    }
+
+    #[test]
+    fn claude_models_price_from_their_own_rows() {
+        let usage = json!({"input_tokens": 1_000_000});
+        let cost = |model| estimate_cost(Provider::Anthropic, model, &usage);
+        assert_eq!(cost("claude-opus-5-5"), Some(4.0));
+        assert_eq!(cost("claude-opus-5-20260101"), Some(5.0));
+        // also matches "claude-opus-4", which is priced at 15.0
+        assert_eq!(cost("claude-opus-4-8"), Some(5.0));
     }
 
     #[test]
@@ -299,10 +320,10 @@ mod tests {
 
     #[test]
     fn anthropic_compounding_multipliers() {
-        let model = "claude-opus-4-6";
+        let model = "claude-opus-5-5";
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
         let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
-        let baseline = 5.0 + (25.0 * 2.0);
+        let baseline = 4.0 + (20.0 * 2.0);
         assert_eq!(cost, baseline);
 
         let usage =
@@ -312,7 +333,7 @@ mod tests {
 
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000, "inference_geo": "us", "speed": "fast"});
         let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
-        assert_eq!(cost, baseline * 1.1 * 6.0);
+        assert_eq!(cost, baseline * 1.1 * 2.0);
     }
 
     #[test]
@@ -368,5 +389,19 @@ mod tests {
 
         let cost = estimate_cost_with(Some(&custom), Provider::Unknown, "kuu-1", &usage);
         assert_eq!(cost, Some(0.4));
+    }
+
+    #[test]
+    fn haiku_5_5_long_prompts_pay_the_higher_tier() {
+        let model = "claude-haiku-5-5";
+
+        // cache reads count toward the prompt length
+        let usage = json!({"input_tokens": 0, "cache_read_input_tokens": 1_000_000, "output_tokens": 1_000_000});
+        let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
+        assert_eq!(cost, 2.5 + 0.05);
+
+        let usage = json!({"input_tokens": 50_000});
+        let cost = estimate_cost(Provider::Anthropic, model, &usage).unwrap();
+        assert_eq!(cost, 0.1 * 50_000.0 / 1_000_000.0);
     }
 }

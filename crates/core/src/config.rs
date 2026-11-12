@@ -94,6 +94,22 @@ pub struct ModelPricing {
     pub cache_write_5m: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_1h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_prompt: Option<LongPromptPricing>,
+}
+
+/// Rates for every token of a request whose prompt is longer than `tokens`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct LongPromptPricing {
+    pub tokens: u64,
+    pub input: f64,
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -267,6 +283,7 @@ output = 0.0
                 cached_input: None,
                 cache_write_5m: None,
                 cache_write_1h: None,
+                long_prompt: None,
             }
         );
         Ok(())

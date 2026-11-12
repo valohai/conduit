@@ -253,8 +253,8 @@ mod tests {
     #[test]
     fn picks_longest_match() {
         let usage = json!({"input_tokens": 1_000_000, "output_tokens": 2_000_000});
-        let cost = estimate_cost(Provider::OpenAI, "gpt-5.4", &usage).unwrap(); // also matches "gpt-5"
-        assert_eq!(cost, 2.5 + (15.0 * 2.0));
+        let cost = estimate_cost(Provider::OpenAI, "gpt-5.4-mini", &usage).unwrap(); // also matches "gpt-5.4" and "gpt-5"
+        assert_eq!(cost, 0.75 + (4.5 * 2.0));
     }
 
     #[test]

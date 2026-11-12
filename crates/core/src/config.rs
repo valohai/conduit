@@ -259,7 +259,7 @@ upstream = "https://api.anthropic.com"
 
     #[test]
     fn parse_upstream_timeouts() -> anyhow::Result<()> {
-        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 30")?;
+        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 30", |_| None)?;
         assert_eq!(
             config.upstream.connect_timeout(),
             Some(Duration::from_secs(10))
@@ -269,7 +269,7 @@ upstream = "https://api.anthropic.com"
             Some(Duration::from_secs(30))
         );
 
-        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 0")?;
+        let config = Config::from_toml_str("[upstream]\nidle_timeout_s = 0", |_| None)?;
         assert_eq!(config.upstream.idle_timeout(), None);
         Ok(())
     }

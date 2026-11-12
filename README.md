@@ -60,7 +60,7 @@ input = 0.042    # USD per million tokens
 output = 0.0
 ```
 
-`input` and `output` are required. The optional `cached_input`, `cache_write_5m` and `cache_write_1h` price prompt cache reads and 5-minute and 1-hour cache writes, and default to 0.1x, 1.25x and 2x of `input`; set them for models whose cache rates differ. For models that charge more for long prompts, an optional `[pricing."<prefix>".long_prompt]` table takes `tokens`, the prompt length above which it applies, and the same rate keys; a request over it pays those rates for all of its tokens, cache reads and writes included.
+`input` and `output` are required. The optional `cached_input`, `cache_write_5m` and `cache_write_1h` price prompt cache reads and 5-minute and 1-hour cache writes, and default to 0.1x, 1.25x and 2x of `input`; set them for models whose cache rates differ. `cached_input` also prices OpenAI cached tokens, where leaving it out means no discount instead of 0.1x. For models that charge more for long prompts, an optional `[pricing."<prefix>".long_prompt]` table takes `tokens`, the prompt length above which it applies, and the same rate keys; a request over it pays those rates for all of its tokens, cache reads and writes included.
 
 Requests to providers have no total time limit, so long streamed responses are never cut. Instead, an optional `[upstream]` table sets how long Conduit waits to connect and how long a response may go without sending any data, in seconds; `0` disables either one:
 

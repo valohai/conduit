@@ -74,12 +74,12 @@ impl Config {
         read_env_var: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::from_str(s)?;
-        config.post_load(read_env_var);
+        config.after_load(read_env_var);
         Ok(config)
     }
 
-    fn post_load(&mut self, read_env_var: impl Fn(&str) -> Option<String>) {
-        // apply env var overrides, then normalize values
+    fn after_load(&mut self, read_env_var: impl Fn(&str) -> Option<String>) {
+        // apply env var overrides and normalize values
 
         if self.listen.starts_with(':') {
             self.listen = format!("127.0.0.1{}", self.listen);

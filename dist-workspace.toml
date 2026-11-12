@@ -23,3 +23,7 @@ pr-run-mode = "plan"
 # https://github.com/astral-sh/uv/blob/main/dist-workspace.toml#L70
 install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 install-updater = false
+
+# dist defaults Apple Silicon builds to macos-14, which GitHub retired
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

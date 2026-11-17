@@ -40,7 +40,13 @@ conduit --help
 
 Conduit uses a `conduit.toml` file as its configuration file.
 
-Create a `conduit.toml` file in your working directory, otherwise Conduit will not be able to run.
+By default Conduit reads `conduit.toml` from the working directory. To keep the config somewhere else, pass `--config <path>` (`-c`) or set the `CONDUIT_CONFIG` environment variable. Pass it to every `conduit` command, or export `CONDUIT_CONFIG`, so `conduit proxy` and `conduit dashboard` read the same config:
+
+```shell
+conduit --config ~/.config/conduit/conduit.toml proxy
+```
+
+`conduit proxy` won't start without a config that defines at least one `[providers.<name>]` section.
 
 You can copy the example [from here](https://github.com/valohai/conduit/blob/main/conduit.example.toml) and adjust where Conduit will be listening to LLM calls and setup the providers you are using.
 
@@ -98,6 +104,23 @@ client = Anthropic(base_url="http://localhost:8080/anthropic")
 ```
 
 See [`examples/`](https://github.com/valohai/conduit/tree/main/examples) for complete Python usage examples.
+
+### Check that it works
+
+With `conduit proxy` running, send a request through it. You don't need an API key for this check:
+
+```shell
+curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:8080/anthropic/v1/models
+```
+
+Replace `anthropic` with the name of one of your `[providers.<name>]` sections.
+
+- `401`: the request went through Conduit and reached the provider, which rejected it for having no key
+- `404`: usually the provider name in the URL doesn't match a `[providers.<name>]` section
+- `502`: Conduit is running but couldn't reach the provider; check its `upstream` URL and your network
+- `000` with a `Failed to connect` error: Conduit isn't running or is listening on another address
+
+Run your code with real keys, then open `conduit dashboard` to see tokens and cost per call.
 
 ## Development
 

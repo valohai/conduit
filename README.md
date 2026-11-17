@@ -40,13 +40,13 @@ conduit --help
 
 Conduit uses a `conduit.toml` file as its configuration file.
 
-By default Conduit reads `conduit.toml` from the working directory. To keep the config somewhere else, pass `--config <path>` (`-c`) or set the `CONDUIT_CONFIG` environment variable. This works for both `conduit proxy` and `conduit dashboard`:
+By default Conduit reads `conduit.toml` from the working directory. To keep the config somewhere else, pass `--config <path>` (`-c`) or set the `CONDUIT_CONFIG` environment variable. Pass it to every `conduit` command, or export `CONDUIT_CONFIG`, so `conduit proxy` and `conduit dashboard` read the same config:
 
 ```shell
 conduit --config ~/.config/conduit/conduit.toml proxy
 ```
 
-Conduit won't start without a config that defines at least one `[providers.<name>]` section.
+`conduit proxy` won't start without a config that defines at least one `[providers.<name>]` section.
 
 You can copy the example [from here](https://github.com/valohai/conduit/blob/main/conduit.example.toml) and adjust where Conduit will be listening to LLM calls and setup the providers you are using.
 

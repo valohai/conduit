@@ -110,10 +110,15 @@ See [`examples/`](https://github.com/valohai/conduit/tree/main/examples) for com
 With `conduit proxy` running, send a request through it. You don't need an API key for this check:
 
 ```shell
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/anthropic/v1/models
+curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:8080/anthropic/v1/models
 ```
 
-A `401` means the request went through Conduit and reached the provider, which rejected it for having no key. A `404` usually means the provider name in the URL doesn't match a `[providers.<name>]` section. A connection error means Conduit isn't running or is listening on another address.
+Replace `anthropic` with the name of one of your `[providers.<name>]` sections.
+
+- `401`: the request went through Conduit and reached the provider, which rejected it for having no key
+- `404`: usually the provider name in the URL doesn't match a `[providers.<name>]` section
+- `502`: Conduit is running but couldn't reach the provider; check its `upstream` URL and your network
+- `000` with a `Failed to connect` error: Conduit isn't running or is listening on another address
 
 Run your code with real keys, then open `conduit dashboard` to see tokens and cost per call.
 

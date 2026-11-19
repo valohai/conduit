@@ -281,6 +281,14 @@ async fn health() -> (StatusCode, &'static str) {
 #[cfg(test)]
 pub(crate) mod testutil {
     use super::*;
+    use conduit_core::{
+        IdentityDeclaration, TransitPage, TransitQuery, TransitRecord, TransitStorage,
+        UsageDeclaration,
+    };
+    use std::collections::HashMap;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
 
     pub fn test_state() -> Arc<AppState> {
         test_state_with_client(reqwest::Client::new())
@@ -292,6 +300,92 @@ pub(crate) mod testutil {
             http_client,
             report_tx,
         })
+    }
+
+    // keeps only transit ids, which is all the flush and report paths look at
+    #[derive(Default)]
+    pub struct FakeTransitStorage {
+        pub unsent: Mutex<Vec<Uuid>>,
+        pub sent: Mutex<Vec<Uuid>>,
+    }
+
+    impl FakeTransitStorage {
+        pub fn with_unsent(count: usize) -> Arc<Self> {
+            Arc::new(Self {
+                unsent: Mutex::new((0..count).map(|_| Uuid::now_v7()).collect()),
+                ..Self::default()
+            })
+        }
+    }
+
+    impl TransitStorage for FakeTransitStorage {
+        fn store_identities(
+            &self,
+            _declarations: Vec<IdentityDeclaration>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn store_usages(
+            &self,
+            _declarations: Vec<UsageDeclaration>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn list_transits(
+            &self,
+            _query: TransitQuery,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TransitPage>> + Send + '_>> {
+            Box::pin(async { anyhow::bail!("not faked") })
+        }
+
+        fn get_transits(
+            &self,
+            _transit_ids: Vec<Uuid>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+            Box::pin(async { anyhow::bail!("not faked") })
+        }
+
+        fn list_unsent(
+            &self,
+            limit: u32,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+            let records = self
+                .unsent
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit as usize)
+                .map(|&transit_id| TransitRecord {
+                    transit_id,
+                    stored_at: chrono::Utc::now(),
+                    provider: Provider::default(),
+                    header_id: None,
+                    body_id: None,
+                    vh_headers: Some(HashMap::from([(
+                        "x-vh-tag-context".to_string(),
+                        "test".to_string(),
+                    )])),
+                    model: None,
+                    usage: None,
+                    estimated_cost_usd: None,
+                })
+                .collect();
+            Box::pin(async { Ok(records) })
+        }
+
+        fn mark_sent(
+            &self,
+            transit_ids: Vec<Uuid>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            self.unsent
+                .lock()
+                .unwrap()
+                .retain(|id| !transit_ids.contains(id));
+            self.sent.lock().unwrap().extend(transit_ids);
+            Box::pin(async { Ok(()) })
+        }
     }
 }
 

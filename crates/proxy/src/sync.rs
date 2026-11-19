@@ -30,57 +30,72 @@ pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client:
 
     loop {
         interval.tick().await;
+        flush_unsent(&storages, &http_client, &endpoint, api_key).await;
+    }
+}
 
-        loop {
-            let records = match storages.transit.list_unsent(SYNC_POST_BATCH_SIZE).await {
-                Ok(r) if r.is_empty() => break,
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to list unsent transit records");
-                    break;
+// one flush: posts unsent records in batches until none are left or a post fails,
+// and returns how many records the endpoint accepted
+async fn flush_unsent(
+    storages: &Storages,
+    http_client: &reqwest::Client,
+    endpoint: &str,
+    api_key: &str,
+) -> usize {
+    let mut sent = 0;
+
+    loop {
+        let records = match storages.transit.list_unsent(SYNC_POST_BATCH_SIZE).await {
+            Ok(r) if r.is_empty() => break,
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list unsent transit records");
+                break;
+            }
+        };
+
+        let ids: Vec<_> = records.iter().map(|r| r.transit_id).collect();
+        let payload: Vec<TransitPost> = records.iter().map(TransitPost::from).collect();
+
+        tracing::trace!(
+            count = ids.len(),
+            payload = %serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            "posting transit records",
+        );
+
+        let result = http_client
+            .post(endpoint)
+            .bearer_auth(api_key)
+            .json(&payload)
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!(count = ids.len(), "sent transit records");
+                sent += ids.len();
+                if let Err(e) = storages.transit.mark_sent(ids).await {
+                    tracing::error!(error = %e, "failed to mark transit records as sent");
                 }
-            };
-
-            let ids: Vec<_> = records.iter().map(|r| r.transit_id).collect();
-            let payload: Vec<TransitPost> = records.iter().map(TransitPost::from).collect();
-
-            tracing::trace!(
-                count = ids.len(),
-                payload = %serde_json::to_string_pretty(&payload).unwrap_or_default(),
-                "posting transit records",
-            );
-
-            let result = http_client
-                .post(&endpoint)
-                .bearer_auth(api_key)
-                .json(&payload)
-                .send()
-                .await;
-
-            match result {
-                Ok(resp) if resp.status().is_success() => {
-                    tracing::debug!(count = ids.len(), "sent transit records");
-                    if let Err(e) = storages.transit.mark_sent(ids).await {
-                        tracing::error!(error = %e, "failed to mark transit records as sent");
-                    }
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    tracing::warn!(
-                        %status,
-                        body = body.chars().take(200).collect::<String>(),
-                        "endpoint rejected transit records, will retry later",
-                    );
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to send transit records, will retry later");
-                    break;
-                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                tracing::warn!(
+                    %status,
+                    body = body.chars().take(200).collect::<String>(),
+                    "endpoint rejected transit records, will retry later",
+                );
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to send transit records, will retry later");
+                break;
             }
         }
     }
+
+    sent
 }
 
 #[derive(Serialize)]
@@ -119,6 +134,78 @@ impl From<&TransitRecord> for TransitPost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::FakeTransitStorage;
+    use axum::Json;
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use std::sync::{Arc, Mutex};
+    use tokio::net::TcpListener;
+
+    // a stand-in for the Valohai LLM ingest endpoint that answers every post with
+    // `status` and keeps the size of each posted batch
+    async fn ingest_endpoint(status: StatusCode) -> (String, Arc<Mutex<Vec<usize>>>) {
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/api/ingest/transits/",
+            post({
+                let batches = batches.clone();
+                move |Json(body): Json<Vec<serde_json::Value>>| {
+                    batches.lock().unwrap().push(body.len());
+                    async move { status }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/api/ingest/transits/"), batches)
+    }
+
+    #[tokio::test]
+    async fn flush_sends_every_unsent_record_across_batches() {
+        let storage = FakeTransitStorage::with_unsent(150);
+        let storages = Storages {
+            transit: storage.clone(),
+        };
+        let (endpoint, batches) = ingest_endpoint(StatusCode::OK).await;
+
+        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+
+        assert_eq!(sent, 150);
+        assert_eq!(*batches.lock().unwrap(), vec![64, 64, 22]);
+        assert!(storage.unsent.lock().unwrap().is_empty());
+        assert_eq!(storage.sent.lock().unwrap().len(), 150);
+    }
+
+    #[tokio::test]
+    async fn flush_sends_nothing_when_the_endpoint_rejects() {
+        let storage = FakeTransitStorage::with_unsent(150);
+        let storages = Storages {
+            transit: storage.clone(),
+        };
+        let (endpoint, batches) = ingest_endpoint(StatusCode::UNAUTHORIZED).await;
+
+        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+
+        assert_eq!(sent, 0);
+        // the first rejection ends the flush; the rest wait for the next one
+        assert_eq!(*batches.lock().unwrap(), vec![64]);
+        assert_eq!(storage.unsent.lock().unwrap().len(), 150);
+        assert!(storage.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_with_nothing_unsent_posts_nothing() {
+        let storage = FakeTransitStorage::with_unsent(0);
+        let storages = Storages { transit: storage };
+        let (endpoint, batches) = ingest_endpoint(StatusCode::OK).await;
+
+        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+
+        assert_eq!(sent, 0);
+        assert!(batches.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn forwarding_status_names_the_url_but_not_the_key() {

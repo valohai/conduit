@@ -90,7 +90,16 @@ pub async fn valohai_llm_poster(
 
     loop {
         interval.tick().await;
-        let sent = flush_unsent(&storages, &http_client, &endpoint, api_key).await;
+        // a flush that used up its time is followed by the next one right away,
+        // as its tick is already due
+        let sent = flush_unsent(
+            &storages,
+            &http_client,
+            &endpoint,
+            api_key,
+            SYNC_FLUSH_INTERVAL,
+        )
+        .await;
         if sent > 0 {
             let records = if sent == 1 { "record" } else { "records" };
             tracing::info!("sent {sent} usage {records} to Valohai LLM");
@@ -115,14 +124,17 @@ pub async fn valohai_llm_poster(
     }
 }
 
-// one flush: posts unsent records in batches until none are left or a post fails,
-// and returns how many records the endpoint accepted
+// one flush: posts unsent records in batches until none are left, a post fails or
+// `time_limit` has passed, and returns how many records the endpoint accepted;
+// the limit keeps the caller reporting while records come in as fast as they go out
 async fn flush_unsent(
     storages: &Storages,
     http_client: &reqwest::Client,
     endpoint: &str,
     api_key: &str,
+    time_limit: Duration,
 ) -> usize {
+    let started = std::time::Instant::now();
     let mut sent = 0;
 
     loop {
@@ -157,6 +169,9 @@ async fn flush_unsent(
                 sent += ids.len();
                 if let Err(e) = storages.transit.mark_sent(ids).await {
                     tracing::error!(error = %e, "failed to mark transit records as sent");
+                }
+                if started.elapsed() >= time_limit {
+                    break;
                 }
             }
             Ok(resp) => {
@@ -223,6 +238,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
 
+    const NO_TIME_LIMIT: Duration = Duration::MAX;
+
     // a stand-in for the Valohai LLM ingest endpoint that answers every post with
     // `status` and keeps the size of each posted batch
     async fn ingest_endpoint(status: StatusCode) -> (String, Arc<Mutex<Vec<usize>>>) {
@@ -251,12 +268,42 @@ mod tests {
         };
         let (endpoint, batches) = ingest_endpoint(StatusCode::OK).await;
 
-        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+        let sent = flush_unsent(
+            &storages,
+            &reqwest::Client::new(),
+            &endpoint,
+            "dummy",
+            NO_TIME_LIMIT,
+        )
+        .await;
 
         assert_eq!(sent, 150);
         assert_eq!(*batches.lock().unwrap(), vec![64, 64, 22]);
         assert!(storage.unsent.lock().unwrap().is_empty());
         assert_eq!(storage.sent.lock().unwrap().len(), 150);
+    }
+
+    #[tokio::test]
+    async fn flush_stops_at_its_time_limit_and_leaves_the_rest_for_the_next_one() {
+        let storage = FakeTransitStorage::with_unsent(150);
+        let storages = Storages {
+            transit: storage.clone(),
+        };
+        let (endpoint, batches) = ingest_endpoint(StatusCode::OK).await;
+
+        // no time at all still lets one batch through, so a flush always makes progress
+        let sent = flush_unsent(
+            &storages,
+            &reqwest::Client::new(),
+            &endpoint,
+            "dummy",
+            Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(sent, 64);
+        assert_eq!(*batches.lock().unwrap(), vec![64]);
+        assert_eq!(storage.unsent.lock().unwrap().len(), 86);
     }
 
     #[tokio::test]
@@ -267,7 +314,14 @@ mod tests {
         };
         let (endpoint, batches) = ingest_endpoint(StatusCode::UNAUTHORIZED).await;
 
-        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+        let sent = flush_unsent(
+            &storages,
+            &reqwest::Client::new(),
+            &endpoint,
+            "dummy",
+            NO_TIME_LIMIT,
+        )
+        .await;
 
         assert_eq!(sent, 0);
         // the first rejection ends the flush; the rest wait for the next one
@@ -292,7 +346,14 @@ mod tests {
         let storages = Storages { transit: storage };
         let (endpoint, batches) = ingest_endpoint(StatusCode::OK).await;
 
-        let sent = flush_unsent(&storages, &reqwest::Client::new(), &endpoint, "dummy").await;
+        let sent = flush_unsent(
+            &storages,
+            &reqwest::Client::new(),
+            &endpoint,
+            "dummy",
+            NO_TIME_LIMIT,
+        )
+        .await;
 
         assert_eq!(sent, 0);
         assert!(batches.lock().unwrap().is_empty());

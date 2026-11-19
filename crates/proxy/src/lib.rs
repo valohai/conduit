@@ -51,8 +51,15 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
         anyhow::bail!("No providers specified, gateway will not be functional.");
     }
     let (report_tx, report_rx) = mpsc::unbounded_channel();
-    tokio::spawn(report_processor(report_rx, storages.clone()));
+    let local_only_calls = sync::LocalOnlyCalls::default();
+    tokio::spawn(report_processor(
+        report_rx,
+        storages.clone(),
+        local_only_calls.clone(),
+    ));
 
+    // the default log level should tell whether usage leaves this machine
+    tracing::info!("{}", sync::forwarding_status(&config.valohai_llm));
     if config.valohai_llm.enabled() {
         let config_for_sync = config.clone();
         let http_client_for_sync = reqwest::Client::builder()
@@ -62,6 +69,7 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
             storages,
             config_for_sync,
             http_client_for_sync,
+            local_only_calls,
         ));
     }
 
@@ -279,6 +287,14 @@ async fn health() -> (StatusCode, &'static str) {
 #[cfg(test)]
 pub(crate) mod testutil {
     use super::*;
+    use conduit_core::{
+        IdentityDeclaration, TransitPage, TransitQuery, TransitRecord, TransitStorage,
+        UsageDeclaration,
+    };
+    use std::collections::HashMap;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
 
     pub fn test_state() -> Arc<AppState> {
         test_state_with_client(reqwest::Client::new())
@@ -290,6 +306,105 @@ pub(crate) mod testutil {
             http_client,
             report_tx,
         })
+    }
+
+    // keeps only transit ids, which is all the flush and report paths look at
+    #[derive(Default)]
+    pub struct FakeTransitStorage {
+        pub unsent: Mutex<Vec<Uuid>>,
+        pub sent: Mutex<Vec<Uuid>>,
+        fail_stores: bool,
+    }
+
+    impl FakeTransitStorage {
+        pub fn with_unsent(count: usize) -> Arc<Self> {
+            Arc::new(Self {
+                unsent: Mutex::new((0..count).map(|_| Uuid::now_v7()).collect()),
+                ..Self::default()
+            })
+        }
+
+        // a storage that can't be written to, e.g. a full disk
+        pub fn failing_to_store() -> Arc<Self> {
+            Arc::new(Self {
+                fail_stores: true,
+                ..Self::default()
+            })
+        }
+    }
+
+    impl TransitStorage for FakeTransitStorage {
+        fn store_identities(
+            &self,
+            _declarations: Vec<IdentityDeclaration>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            let fail = self.fail_stores;
+            Box::pin(async move {
+                anyhow::ensure!(!fail, "storage is failing");
+                Ok(())
+            })
+        }
+
+        fn store_usages(
+            &self,
+            _declarations: Vec<UsageDeclaration>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn list_transits(
+            &self,
+            _query: TransitQuery,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TransitPage>> + Send + '_>> {
+            Box::pin(async { anyhow::bail!("not faked") })
+        }
+
+        fn get_transits(
+            &self,
+            _transit_ids: Vec<Uuid>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+            Box::pin(async { anyhow::bail!("not faked") })
+        }
+
+        fn list_unsent(
+            &self,
+            limit: u32,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<TransitRecord>>> + Send + '_>> {
+            let records = self
+                .unsent
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit as usize)
+                .map(|&transit_id| TransitRecord {
+                    transit_id,
+                    stored_at: chrono::Utc::now(),
+                    provider: Provider::default(),
+                    header_id: None,
+                    body_id: None,
+                    vh_headers: Some(HashMap::from([(
+                        "x-vh-tag-context".to_string(),
+                        "test".to_string(),
+                    )])),
+                    model: None,
+                    usage: None,
+                    estimated_cost_usd: None,
+                })
+                .collect();
+            Box::pin(async { Ok(records) })
+        }
+
+        fn mark_sent(
+            &self,
+            transit_ids: Vec<Uuid>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            self.unsent
+                .lock()
+                .unwrap()
+                .retain(|id| !transit_ids.contains(id));
+            self.sent.lock().unwrap().extend(transit_ids);
+            Box::pin(async { Ok(()) })
+        }
     }
 }
 

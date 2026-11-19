@@ -31,7 +31,8 @@ fn proxy_without_a_config_leaves_the_directory_empty() {
 
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("No providers"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("No providers configured: there is no config file at ./conduit.toml."),
         "{output:?}"
     );
     assert_eq!(files_in(dir.path()), Vec::<String>::new());
@@ -46,10 +47,28 @@ fn proxy_with_an_empty_config_creates_no_database() {
 
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("No providers"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("No providers configured in conduit.toml."),
         "{output:?}"
     );
     assert_eq!(files_in(dir.path()), ["conduit.toml"]);
+}
+
+#[test]
+fn proxy_names_the_config_file_given_with_config() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("other.toml"), "listen = \":0\"").unwrap();
+
+    let output = conduit_in(dir.path(), &["--config", "other.toml"]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No providers configured in other.toml."),
+        "{output:?}"
+    );
+    assert!(!stderr.contains("./conduit.toml"), "{output:?}");
+    assert_eq!(files_in(dir.path()), ["other.toml"]);
 }
 
 #[test]

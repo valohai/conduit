@@ -138,6 +138,15 @@ impl Config {
             self.valohai_llm.api_key = llm_api_key;
         }
     }
+
+    /// The proxy has nothing to route without providers; the dashboard doesn't need any.
+    pub fn ensure_providers(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.providers.is_empty(),
+            "No providers specified, gateway will not be functional."
+        );
+        Ok(())
+    }
 }
 
 /// USD per million tokens, the same shape as an entry in `pricing.json`.
@@ -430,6 +439,16 @@ output = 0.0
 
         assert_eq!(config.listen, "127.0.0.1:2222");
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_providers_requires_at_least_one_provider() -> anyhow::Result<()> {
+        let config = Config::from_toml_str("", |_| None)?;
+        assert!(config.ensure_providers().is_err());
+
+        let config = Config::from_toml_str("[providers.openai]\nupstream = \"x\"", |_| None)?;
+        config.ensure_providers()?;
         Ok(())
     }
 }

@@ -47,9 +47,7 @@ struct ProviderContext {
 }
 
 pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
-    if config.providers.is_empty() {
-        anyhow::bail!("No providers specified, gateway will not be functional.");
-    }
+    config.ensure_providers()?;
     let (report_tx, report_rx) = mpsc::unbounded_channel();
     tokio::spawn(report_processor(report_rx, storages.clone()));
 

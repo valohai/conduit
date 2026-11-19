@@ -28,3 +28,6 @@ valohai-conduit-core.workspace = true
 valohai-conduit-proxy.workspace = true
 valohai-conduit-storage.workspace = true
 valohai-conduit-tui.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

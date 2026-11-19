@@ -75,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
 
     let config = conduit_core::Config::load(cli.config_path)?;
     tracing::debug!(?config, "config loaded");
+    if matches!(cmd, Commands::Proxy) {
+        // before opening the database, which creates it, so a bad config leaves no files behind
+        config.ensure_providers()?;
+    }
     conduit_core::cost::set_custom_pricing(&config.pricing);
 
     let transit_storage = if matches!(cmd, Commands::Dashboard { .. }) {

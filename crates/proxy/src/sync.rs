@@ -17,12 +17,29 @@ const SYNC_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 // never include the api key, not even a part of it
 pub fn forwarding_status(config: &ValohaiLlmConfig) -> String {
     if config.enabled() {
-        format!("forwarding usage to Valohai LLM at {}", config.url)
+        format!(
+            "forwarding usage to Valohai LLM at {}",
+            loggable_url(&config.url)
+        )
     } else {
         format!(
             "Valohai LLM forwarding off; set {LLM_API_KEY_ENV_VAR} or [valohai-llm] api_key to turn it on"
         )
     }
+}
+
+// the url is free-form config, so it may carry credentials as userinfo or in the
+// query; this goes to the log at the default level, so keep only where it points
+fn loggable_url(url: &str) -> String {
+    // anything that doesn't parse to a host can't be trusted to have no secrets either
+    let Some(mut url) = reqwest::Url::parse(url).ok().filter(|u| u.has_host()) else {
+        return "<invalid url>".to_string();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.as_str().trim_end_matches('/').to_string()
 }
 
 // Recorded calls without X-VH- headers in this run; `list_unsent` never picks
@@ -290,6 +307,41 @@ mod tests {
         let status = forwarding_status(&config);
         assert!(status.contains("http://127.0.0.1:1234"));
         assert!(!status.contains("dummy-key-123"));
+    }
+
+    #[test]
+    fn forwarding_status_leaves_out_credentials_in_the_url() {
+        let config = ValohaiLlmConfig {
+            api_key: "dummy-key-123".into(),
+            url: "https://someone:hunter2@llm.example.com/base?token=abc123#frag".into(),
+        };
+        assert_eq!(
+            forwarding_status(&config),
+            "forwarding usage to Valohai LLM at https://llm.example.com/base"
+        );
+    }
+
+    #[test]
+    fn forwarding_status_shows_the_default_url_as_configured() {
+        let config = ValohaiLlmConfig {
+            api_key: "dummy-key-123".into(),
+            ..ValohaiLlmConfig::default()
+        };
+        assert_eq!(
+            forwarding_status(&config),
+            "forwarding usage to Valohai LLM at https://llm.valohai.com"
+        );
+    }
+
+    #[test]
+    fn forwarding_status_does_not_echo_a_url_it_cannot_parse() {
+        let config = ValohaiLlmConfig {
+            api_key: "dummy-key-123".into(),
+            url: "someone:hunter2@not a url".into(),
+        };
+        let status = forwarding_status(&config);
+        assert!(!status.contains("hunter2"), "{status}");
+        assert!(status.contains("<invalid url>"), "{status}");
     }
 
     #[test]

@@ -51,7 +51,12 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
         anyhow::bail!("No providers specified, gateway will not be functional.");
     }
     let (report_tx, report_rx) = mpsc::unbounded_channel();
-    tokio::spawn(report_processor(report_rx, storages.clone()));
+    let local_only_calls = sync::LocalOnlyCalls::default();
+    tokio::spawn(report_processor(
+        report_rx,
+        storages.clone(),
+        local_only_calls.clone(),
+    ));
 
     // the default log level should tell whether usage leaves this machine
     tracing::info!("{}", sync::forwarding_status(&config.valohai_llm));
@@ -64,6 +69,7 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
             storages,
             config_for_sync,
             http_client_for_sync,
+            local_only_calls,
         ));
     }
 

@@ -1,9 +1,12 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use conduit_core::config::{LLM_API_KEY_ENV_VAR, ValohaiLlmConfig};
 use conduit_core::{Config, Storages, TransitRecord};
 
 use serde::Serialize;
+use tracing::Level;
 
 // Max records sent per outgoing POST; further records are sent in subsequent
 // requests within the same flush.
@@ -22,11 +25,51 @@ pub fn forwarding_status(config: &ValohaiLlmConfig) -> String {
     }
 }
 
-pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client: reqwest::Client) {
+// Recorded calls without X-VH- headers in this run; `list_unsent` never picks
+// them, so they are counted here to tell the user why nothing gets sent.
+#[derive(Clone, Default)]
+pub struct LocalOnlyCalls(Arc<AtomicU64>);
+
+impl LocalOnlyCalls {
+    pub fn add_one(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn take(&self) -> u64 {
+        self.0.swap(0, Ordering::Relaxed)
+    }
+}
+
+// the hint on tagging is worth one info line; repeating it every flush would
+// bury the rest of the log under a steady stream of untagged calls
+#[derive(Default)]
+struct LocalOnlyNotes {
+    told: bool,
+}
+
+impl LocalOnlyNotes {
+    fn level(&mut self, count: u64) -> Option<Level> {
+        if count == 0 {
+            None
+        } else if std::mem::replace(&mut self.told, true) {
+            Some(Level::DEBUG)
+        } else {
+            Some(Level::INFO)
+        }
+    }
+}
+
+pub async fn valohai_llm_poster(
+    storages: Storages,
+    config: Config,
+    http_client: reqwest::Client,
+    local_only_calls: LocalOnlyCalls,
+) {
     let api_key = &config.valohai_llm.api_key;
     let endpoint = format!("{}/api/ingest/transits/", config.valohai_llm.url);
 
     let mut interval = tokio::time::interval(SYNC_FLUSH_INTERVAL);
+    let mut local_only_notes = LocalOnlyNotes::default();
 
     loop {
         interval.tick().await;
@@ -34,6 +77,23 @@ pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client:
         if sent > 0 {
             let records = if sent == 1 { "record" } else { "records" };
             tracing::info!("sent {sent} usage {records} to Valohai LLM");
+        }
+
+        let local_only = local_only_calls.take();
+        let (calls, stay) = if local_only == 1 {
+            ("call", "stays")
+        } else {
+            ("calls", "stay")
+        };
+        match local_only_notes.level(local_only) {
+            Some(Level::INFO) => tracing::info!(
+                "{local_only} recorded {calls} had no X-VH- headers and {stay} local; \
+                 add an X-VH-Tag-<key> header (e.g. X-VH-Tag-Context) to forward them"
+            ),
+            Some(_) => tracing::debug!(
+                "{local_only} more recorded {calls} had no X-VH- headers and {stay} local"
+            ),
+            None => {}
         }
     }
 }
@@ -197,6 +257,16 @@ mod tests {
         assert_eq!(*batches.lock().unwrap(), vec![64]);
         assert_eq!(storage.unsent.lock().unwrap().len(), 150);
         assert!(storage.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_only_calls_are_noted_at_info_once_then_at_debug() {
+        let mut notes = LocalOnlyNotes::default();
+        assert_eq!(notes.level(0), None);
+        assert_eq!(notes.level(3), Some(Level::INFO));
+        assert_eq!(notes.level(0), None);
+        assert_eq!(notes.level(2), Some(Level::DEBUG));
+        assert_eq!(notes.level(5), Some(Level::DEBUG));
     }
 
     #[tokio::test]

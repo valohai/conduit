@@ -101,18 +101,13 @@ pub async fn report_processor(
             maybe_report = rx.recv() => {
                 let Some(report) = maybe_report else {
                     // channel closed, flush everything pending
-                    take_and_store_identities(&mut pending_identities, &storages).await;
+                    take_and_store_identities(&mut pending_identities, &storages, &local_only_calls).await;
                     take_and_store_usages(&mut pending_usages, &storages).await;
                     break;
                 };
 
                 match report.payload {
                     ReportPayload::Identity { provider, header_id, body_id, vh_headers } => {
-                        // `list_unsent` never sends these; the inspector gives None
-                        // for no headers, but an empty map would mean the same
-                        if vh_headers.as_ref().is_none_or(HashMap::is_empty) {
-                            local_only_calls.add_one();
-                        }
                         pending_identities.push(IdentityDeclaration {
                             transit_id: report.transit_id,
                             provider,
@@ -132,7 +127,7 @@ pub async fn report_processor(
                 }
 
                 if pending_identities.len() >= FLUSH_THRESHOLD {
-                    take_and_store_identities(&mut pending_identities, &storages).await;
+                    take_and_store_identities(&mut pending_identities, &storages, &local_only_calls).await;
                     identity_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
                 }
                 if pending_usages.len() >= FLUSH_THRESHOLD {
@@ -144,7 +139,7 @@ pub async fn report_processor(
             // on intervals, flush the related declarations even if the batch size hasn't been reached
 
             _ = &mut identity_deadline => {
-                take_and_store_identities(&mut pending_identities, &storages).await;
+                take_and_store_identities(&mut pending_identities, &storages, &local_only_calls).await;
                 identity_deadline.as_mut().reset(Instant::now() + FLUSH_INTERVAL);
             }
             _ = &mut usage_deadline => {
@@ -155,17 +150,30 @@ pub async fn report_processor(
     }
 }
 
-async fn take_and_store_identities(pending: &mut Vec<IdentityDeclaration>, storages: &Storages) {
+async fn take_and_store_identities(
+    pending: &mut Vec<IdentityDeclaration>,
+    storages: &Storages,
+    local_only_calls: &LocalOnlyCalls,
+) {
     if pending.is_empty() {
         return;
     }
+
+    // `list_unsent` never sends these; the inspector gives None for no headers,
+    // but an empty map would mean the same
+    let local_only = pending
+        .iter()
+        .filter(|identity| identity.vh_headers.as_ref().is_none_or(HashMap::is_empty))
+        .count();
 
     let result = storages
         .transit
         .store_identities(std::mem::take(pending))
         .await;
-    if let Err(err) = result {
-        tracing::error!(error = %err, "failed to store identities");
+    match result {
+        // counted only once stored, as the note calls them recorded
+        Ok(()) => local_only_calls.add(local_only as u64),
+        Err(err) => tracing::error!(error = %err, "failed to store identities"),
     }
 }
 
@@ -226,6 +234,22 @@ mod tests {
         report_processor(rx, storages, local_only_calls.clone()).await;
 
         assert_eq!(local_only_calls.take(), 2);
+        assert_eq!(local_only_calls.take(), 0);
+    }
+
+    #[tokio::test]
+    async fn identities_that_fail_to_store_are_not_counted_as_local_only() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(identity(None)).unwrap();
+        tx.send(identity(None)).unwrap();
+        drop(tx);
+
+        let local_only_calls = LocalOnlyCalls::default();
+        let storages = Storages {
+            transit: FakeTransitStorage::failing_to_store(),
+        };
+        report_processor(rx, storages, local_only_calls.clone()).await;
+
         assert_eq!(local_only_calls.take(), 0);
     }
 }

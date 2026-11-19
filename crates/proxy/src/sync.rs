@@ -48,8 +48,8 @@ fn loggable_url(url: &str) -> String {
 pub struct LocalOnlyCalls(Arc<AtomicU64>);
 
 impl LocalOnlyCalls {
-    pub fn add_one(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    pub fn add(&self, count: u64) {
+        self.0.fetch_add(count, Ordering::Relaxed);
     }
 
     pub fn take(&self) -> u64 {

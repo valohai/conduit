@@ -313,12 +313,21 @@ pub(crate) mod testutil {
     pub struct FakeTransitStorage {
         pub unsent: Mutex<Vec<Uuid>>,
         pub sent: Mutex<Vec<Uuid>>,
+        fail_stores: bool,
     }
 
     impl FakeTransitStorage {
         pub fn with_unsent(count: usize) -> Arc<Self> {
             Arc::new(Self {
                 unsent: Mutex::new((0..count).map(|_| Uuid::now_v7()).collect()),
+                ..Self::default()
+            })
+        }
+
+        // a storage that can't be written to, e.g. a full disk
+        pub fn failing_to_store() -> Arc<Self> {
+            Arc::new(Self {
+                fail_stores: true,
                 ..Self::default()
             })
         }
@@ -329,7 +338,11 @@ pub(crate) mod testutil {
             &self,
             _declarations: Vec<IdentityDeclaration>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
+            let fail = self.fail_stores;
+            Box::pin(async move {
+                anyhow::ensure!(!fail, "storage is failing");
+                Ok(())
+            })
         }
 
         fn store_usages(

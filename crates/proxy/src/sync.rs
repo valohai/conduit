@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use conduit_core::config::{LLM_API_KEY_ENV_VAR, ValohaiLlmConfig};
 use conduit_core::{Config, Storages, TransitRecord};
 
 use serde::Serialize;
@@ -9,6 +10,17 @@ use serde::Serialize;
 const SYNC_POST_BATCH_SIZE: u32 = 64;
 // The cadence to flush transits to Valohai LLM.
 const SYNC_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+
+// never include the api key, not even a part of it
+pub fn forwarding_status(config: &ValohaiLlmConfig) -> String {
+    if config.enabled() {
+        format!("forwarding usage to Valohai LLM at {}", config.url)
+    } else {
+        format!(
+            "Valohai LLM forwarding off; set {LLM_API_KEY_ENV_VAR} or [valohai-llm] api_key to turn it on"
+        )
+    }
+}
 
 pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client: reqwest::Client) {
     let api_key = &config.valohai_llm.api_key;
@@ -101,5 +113,28 @@ impl From<&TransitRecord> for TransitPost {
             usage: r.usage.clone(),
             estimated_cost_usd: r.estimated_cost_usd,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwarding_status_names_the_url_but_not_the_key() {
+        let config = ValohaiLlmConfig {
+            api_key: "dummy-key-123".into(),
+            url: "http://127.0.0.1:1234".into(),
+        };
+        let status = forwarding_status(&config);
+        assert!(status.contains("http://127.0.0.1:1234"));
+        assert!(!status.contains("dummy-key-123"));
+    }
+
+    #[test]
+    fn forwarding_status_says_how_to_turn_forwarding_on() {
+        let status = forwarding_status(&ValohaiLlmConfig::default());
+        assert!(status.contains(LLM_API_KEY_ENV_VAR));
+        assert!(status.contains("[valohai-llm] api_key"));
     }
 }

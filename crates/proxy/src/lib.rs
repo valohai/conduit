@@ -53,6 +53,8 @@ pub async fn start(config: Config, storages: Storages) -> anyhow::Result<()> {
     let (report_tx, report_rx) = mpsc::unbounded_channel();
     tokio::spawn(report_processor(report_rx, storages.clone()));
 
+    // the default log level should tell whether usage leaves this machine
+    tracing::info!("{}", sync::forwarding_status(&config.valohai_llm));
     if config.valohai_llm.enabled() {
         let config_for_sync = config.clone();
         let http_client_for_sync = reqwest::Client::builder()

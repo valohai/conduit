@@ -174,11 +174,27 @@ pub struct ProviderConfig {
     pub upstream: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ValohaiLlmConfig {
     pub api_key: String,
     pub url: String,
+}
+
+// the config gets logged at debug level, so the key must never be printed;
+// whether one is set is still worth showing
+impl std::fmt::Debug for ValohaiLlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let api_key = if self.api_key.is_empty() {
+            "<empty>"
+        } else {
+            "<redacted>"
+        };
+        f.debug_struct("ValohaiLlmConfig")
+            .field("api_key", &api_key)
+            .field("url", &self.url)
+            .finish()
+    }
 }
 
 impl Default for ValohaiLlmConfig {
@@ -388,6 +404,71 @@ url = "http://localhost:1234/"
         assert_eq!(config.valohai_llm.api_key, "MY_KEY_123");
         assert_eq!(config.valohai_llm.url, "http://localhost:1234");
         assert!(config.valohai_llm.enabled());
+        Ok(())
+    }
+
+    // a key must not show up even in part, e.g. through a prefix kept for debugging
+    fn assert_key_not_in(debug: &str, key: &str) {
+        let chars: Vec<char> = key.chars().collect();
+        for fragment in chars.windows(4) {
+            let fragment: String = fragment.iter().collect();
+            assert!(
+                !debug.contains(&fragment),
+                "{fragment:?} of the key leaked into {debug}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_output_hides_valohai_llm_api_key_from_config_file() -> anyhow::Result<()> {
+        let key = "Zq7xK2pLm9wR4tY8";
+        let toml = format!("[valohai-llm]\napi_key = \"{key}\"\nurl = \"http://localhost:1234\"");
+        let config = Config::from_toml_str(&toml, |_| None)?;
+        assert_eq!(config.valohai_llm.api_key, key);
+
+        for debug in [
+            format!("{:?}", config.valohai_llm),
+            format!("{config:?}"),
+            format!("{config:#?}"),
+        ] {
+            assert_key_not_in(&debug, key);
+            assert!(debug.contains(r#"api_key: "<redacted>""#), "{debug}");
+            assert!(debug.contains(r#"url: "http://localhost:1234""#), "{debug}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debug_output_hides_valohai_llm_api_key_from_env_var() -> anyhow::Result<()> {
+        let key = "Hf3vN8cJ5bQ1sW6e";
+        let config = Config::from_toml_str("", |name| {
+            (name == LLM_API_KEY_ENV_VAR).then(|| key.to_string())
+        })?;
+        assert_eq!(config.valohai_llm.api_key, key);
+
+        for debug in [
+            format!("{:?}", config.valohai_llm),
+            format!("{config:?}"),
+            format!("{config:#?}"),
+        ] {
+            assert_key_not_in(&debug, key);
+            assert!(debug.contains(r#"api_key: "<redacted>""#), "{debug}");
+            assert!(
+                debug.contains(r#"url: "https://llm.valohai.com""#),
+                "{debug}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debug_output_shows_when_valohai_llm_api_key_is_empty() -> anyhow::Result<()> {
+        let config = Config::from_toml_str("", |_| None)?;
+        assert_eq!(
+            format!("{:?}", config.valohai_llm),
+            r#"ValohaiLlmConfig { api_key: "<empty>", url: "https://llm.valohai.com" }"#
+        );
+        assert!(format!("{config:?}").contains(r#"api_key: "<empty>""#));
         Ok(())
     }
 

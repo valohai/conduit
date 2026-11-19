@@ -30,7 +30,11 @@ pub async fn valohai_llm_poster(storages: Storages, config: Config, http_client:
 
     loop {
         interval.tick().await;
-        flush_unsent(&storages, &http_client, &endpoint, api_key).await;
+        let sent = flush_unsent(&storages, &http_client, &endpoint, api_key).await;
+        if sent > 0 {
+            let records = if sent == 1 { "record" } else { "records" };
+            tracing::info!("sent {sent} usage {records} to Valohai LLM");
+        }
     }
 }
 

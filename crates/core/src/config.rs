@@ -15,6 +15,21 @@ pub struct Config {
     /// Model name prefix -> rates; checked before the built-in pricing table.
     pub pricing: HashMap<String, ModelPricing>,
     pub upstream: UpstreamConfig,
+    /// Where this config was read from, for error messages; not a config key.
+    #[serde(skip)]
+    pub source: ConfigSource,
+}
+
+/// Where a [`Config`] came from, so errors can point at the file to fix.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ConfigSource {
+    /// not loaded from disk, e.g. `Config::default()` or a config built in code
+    #[default]
+    NotLoaded,
+    /// no config file was given and there was none at this default path
+    MissingDefault(PathBuf),
+    /// read from this file
+    File(PathBuf),
 }
 
 impl Default for Config {
@@ -26,6 +41,7 @@ impl Default for Config {
             valohai_llm: ValohaiLlmConfig::default(),
             pricing: HashMap::new(),
             upstream: UpstreamConfig::default(),
+            source: ConfigSource::default(),
         }
     }
 }
@@ -85,9 +101,10 @@ impl Config {
         read_env_var: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::from_toml_str("", read_env_var)?)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                source: ConfigSource::MissingDefault(path.to_path_buf()),
+                ..Self::from_toml_str("", read_env_var)?
+            }),
             _ => Self::from_path(path, read_env_var),
         }
     }
@@ -98,8 +115,12 @@ impl Config {
     ) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        Self::from_toml_str(&contents, read_env_var)
-            .with_context(|| format!("failed to parse {}", path.display()))
+        let config = Self::from_toml_str(&contents, read_env_var)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        Ok(Self {
+            source: ConfigSource::File(path.to_path_buf()),
+            ..config
+        })
     }
 
     fn from_toml_str(
@@ -136,6 +157,29 @@ impl Config {
         }
         if let Some(llm_api_key) = read_non_empty(LLM_API_KEY_ENV_VAR) {
             self.valohai_llm.api_key = llm_api_key;
+        }
+    }
+
+    /// The proxy has nothing to route without providers; the dashboard doesn't need any.
+    pub fn ensure_providers(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.providers.is_empty(), self.no_providers_message());
+        Ok(())
+    }
+
+    fn no_providers_message(&self) -> String {
+        let section = "a `[providers.<name>]` section (see conduit.example.toml)";
+        let elsewhere = format!("use --config or {CONFIG_ENV_VAR} to point elsewhere");
+        match &self.source {
+            ConfigSource::NotLoaded => format!("No providers configured. Add {section}."),
+            // `./conduit.toml` makes it clear the working directory was searched
+            ConfigSource::MissingDefault(path) => format!(
+                "No providers configured: there is no config file at {}. Create one with {section}, or {elsewhere}.",
+                Path::new(".").join(path).display()
+            ),
+            ConfigSource::File(path) => format!(
+                "No providers configured in {}. Add {section}, or {elsewhere}.",
+                path.display()
+            ),
         }
     }
 }
@@ -314,7 +358,13 @@ upstream = "https://api.anthropic.com"
         let path = dir.path().join("conduit.toml");
 
         let config = Config::from_path_if_exists(&path, |_| None)?;
-        assert_eq!(config, Config::default());
+        assert_eq!(
+            config,
+            Config {
+                source: ConfigSource::MissingDefault(path.clone()),
+                ..Config::default()
+            }
+        );
 
         std::fs::write(&path, "listen = [[[invalid")?;
         assert!(Config::from_path_if_exists(&path, |_| None).is_err());
@@ -431,5 +481,79 @@ output = 0.0
         assert_eq!(config.listen, "127.0.0.1:2222");
         std::fs::remove_dir_all(&dir)?;
         Ok(())
+    }
+
+    #[test]
+    fn ensure_providers_requires_at_least_one_provider() -> anyhow::Result<()> {
+        let config = Config::from_toml_str("", |_| None)?;
+        assert!(config.ensure_providers().is_err());
+
+        let config = Config::from_toml_str("[providers.openai]\nupstream = \"x\"", |_| None)?;
+        config.ensure_providers()?;
+        Ok(())
+    }
+
+    #[test]
+    fn loaded_config_remembers_which_file_it_came_from() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conduit.toml");
+        std::fs::write(&path, "")?;
+
+        let config = Config::load_with_env(Some(path.clone()), |_| None)?;
+        assert_eq!(config.source, ConfigSource::File(path.clone()));
+
+        let config = Config::from_path_if_exists(&path, |_| None)?;
+        assert_eq!(config.source, ConfigSource::File(path));
+        Ok(())
+    }
+
+    #[test]
+    fn source_cannot_be_set_from_the_config_file() -> anyhow::Result<()> {
+        let config = Config::from_toml_str(r#"source = "elsewhere.toml""#, |_| None)?;
+        assert_eq!(config.source, ConfigSource::NotLoaded);
+        Ok(())
+    }
+
+    #[test]
+    fn no_providers_error_says_no_config_file_was_found() {
+        let config = Config {
+            source: ConfigSource::MissingDefault(PathBuf::from("conduit.toml")),
+            ..Config::default()
+        };
+        let err = config.ensure_providers().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "No providers configured: there is no config file at ./conduit.toml. \
+             Create one with a `[providers.<name>]` section (see conduit.example.toml), \
+             or use --config or CONDUIT_CONFIG to point elsewhere."
+        );
+    }
+
+    #[test]
+    fn no_providers_error_names_the_config_file_that_was_read() {
+        let config = Config {
+            source: ConfigSource::File(PathBuf::from("configs/other.toml")),
+            ..Config::default()
+        };
+        let err = config.ensure_providers().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "No providers configured in configs/other.toml. \
+             Add a `[providers.<name>]` section (see conduit.example.toml), \
+             or use --config or CONDUIT_CONFIG to point elsewhere."
+        );
+        assert!(!err.contains("./conduit.toml"));
+    }
+
+    #[test]
+    fn no_providers_error_for_a_config_built_in_code_mentions_no_file() {
+        let err = Config::default()
+            .ensure_providers()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "No providers configured. Add a `[providers.<name>]` section (see conduit.example.toml)."
+        );
     }
 }
